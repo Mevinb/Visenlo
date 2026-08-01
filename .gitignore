@@ -1,0 +1,62 @@
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# ---------- Virtual environments ----------
+.venv/
+venv/
+env/
+.python-version
+
+# ---------- Tooling caches ----------
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.ipynb_checkpoints/
+
+# ---------- Models & weights (large AND license-restricted) ----------
+# Never publish: inswapper/reswapper/buffalo_l are InsightFace
+# non-commercial research models; xseg is GPL-3; codeformer is CC BY-NC.
+# The app recreates models/ automatically; see README for where to get them.
+models/
+*.onnx
+*.pth
+*.ckpt
+*.safetensors
+
+# ---------- App runtime artifacts (contain YOUR images) ----------
+# Gradio caches uploads/flagged outputs here.
+.gradio/
+outputs/
+output/
+results/
+flagged/
+
+# ---------- Logs ----------
+*.log
+logs/
+nohup.out
+
+# ---------- Secrets & local config ----------
+.env
+.env.*
+!.env.example
+secrets.json
+
+# ---------- IDE / editor ----------
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ---------- OS junk ----------
+.DS_Store
+Thumbs.db
+desktop.ini
