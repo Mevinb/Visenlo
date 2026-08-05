@@ -46,3 +46,29 @@ def aligned_crop_matrix(kps: np.ndarray, size: int):
     return None if matrix is None else matrix.astype(np.float32)
 
 
+class BisenetParser:
+    """Callable: BGR face crop -> int label map (CelebAMask-HQ classes)."""
+
+    def __init__(self, model_path: str, providers=None):
+        import onnxruntime as ort
+        self.session = ort.InferenceSession(model_path, providers=providers)
+        inp = self.session.get_inputs()[0]
+        self.input_name = inp.name
+        self.output_name = self.session.get_outputs()[0].name
+        shape = inp.shape
+        self.size = int(shape[2]) if isinstance(shape[2], int) and shape[2] > 0 else 512
+
+    def __call__(self, crop: np.ndarray) -> np.ndarray:
+        h, w = crop.shape[:2]
+        img = cv2.resize(crop, (self.size, self.size), interpolation=cv2.INTER_LINEAR)
+        img = img[:, :, ::-1].astype(np.float32) / 255.0
+        img = (img - IMAGENET_MEAN) / IMAGENET_STD
+        blob = np.ascontiguousarray(img.transpose(2, 0, 1))[None]
+        logits = self.session.run([self.output_name], {self.input_name: blob})[0]
+        labels = logits[0].argmax(axis=0).astype(np.int32)
+        if labels.shape != (h, w):
+            labels = cv2.resize(labels.astype(np.float32), (w, h),
+                                interpolation=cv2.INTER_NEAREST).astype(np.int32)
+        return labels
+
+
