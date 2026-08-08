@@ -72,3 +72,41 @@ class BisenetParser:
         return labels
 
 
+class XSegOccluder:
+    """Callable-ish occlusion detector producing full-frame occluder masks."""
+
+    def __init__(self, model_path: str, providers=None):
+        import onnxruntime as ort
+        self.session = ort.InferenceSession(model_path, providers=providers)
+        inp = self.session.get_inputs()[0]
+        self.input_name = inp.name
+        self.output_name = self.session.get_outputs()[0].name
+        shape = inp.shape
+        self.size = int(shape[1]) if isinstance(shape[1], int) and shape[1] > 0 else 256
+
+    def detect(self, crop: np.ndarray) -> np.ndarray:
+        img = cv2.resize(crop, (self.size, self.size), interpolation=cv2.INTER_LINEAR)
+        blob = (img[:, :, ::-1].astype(np.float32) / 255.0)[None]
+        out = self.session.run([self.output_name], {self.input_name: blob})[0]
+        mask = np.asarray(out[0], np.float32)
+        while mask.ndim > 2:
+            mask = mask[0]
+        return np.clip(mask, 0, 1)
+
+    def map_to_frame(self, record, target: np.ndarray):
+        """Return a full-frame occluder mask for this face, or None."""
+        kps = getattr(record.face, "kps", None)
+        if kps is None:
+            return None
+        matrix = aligned_crop_matrix(kps, self.size)
+        if matrix is None:
+            return None
+        h, w = target.shape[:2]
+        crop = cv2.warpAffine(target, matrix, (self.size, self.size),
+                              flags=cv2.INTER_LINEAR, borderValue=0)
+        occ = self.detect(crop)
+        inverse = cv2.invertAffineTransform(matrix)
+        full = cv2.warpAffine(occ, inverse, (w, h), flags=cv2.INTER_LINEAR)
+        sigma = max(2.0, self.size * .02)
+        full = cv2.GaussianBlur(full, (int(sigma * 4) | 1,) * 2, sigma)
+        return np.clip(full, 0, 1)
