@@ -63,3 +63,48 @@ def quality_score(image, record: FaceRecord) -> float:
     return float(np.clip(.60 * sharp + .40 * pose, 0, 1))
 
 
+def _ellipse(mask, center, axes, value=1.0):
+    cv2.ellipse(mask, tuple(map(int, center)), tuple(map(int, axes)), 0, 0, 360, value, -1)
+
+
+def fallback_masks(shape):
+    h, w = shape[:2]
+    masks = {name: np.zeros((h, w), np.float32) for name in MASK_NAMES}
+    _ellipse(masks["skin"], (w * .5, h * .53), (w * .40, h * .44))
+    _ellipse(masks["hair"], (w * .5, h * .10), (w * .48, h * .20))
+    _ellipse(masks["eyes"], (w * .5, h * .37), (w * .32, h * .09))
+    _ellipse(masks["eyebrows"], (w * .5, h * .28), (w * .30, h * .05))
+    _ellipse(masks["nose"], (w * .5, h * .52), (w * .13, h * .19))
+    _ellipse(masks["lips"], (w * .5, h * .72), (w * .20, h * .09))
+    masks["background"] = 1.0 - np.clip(masks["skin"] + masks["hair"], 0, 1)
+    for name in masks:
+        masks[name] = cv2.GaussianBlur(masks[name], (0, 0), max(1.0, min(h, w) * .012))
+    return masks
+
+
+
+
+def parse_face(image, record: FaceRecord, parser=None):
+    x1, y1, x2, y2 = record.bbox
+    crop = image[y1:y2, x1:x2]
+    masks = None
+    if parser is not None:
+        try:
+            labels = parser(crop)
+            # CelebAMask-HQ label ids: 1 skin, 2/3 brows, 4/5 eyes, 6 glasses,
+            # 7/8 ears, 10 nose, 12/13 lips, 14 neck, 17 hair, 18 hat.
+            ids = {"skin": [1], "eyes": [4, 5], "eyebrows": [2, 3], "nose": [10],
+                   "lips": [12, 13], "neck": [14], "hair": [17], "ear": [7, 8],
+                   "glasses": [6], "hat": [18]}
+            masks = {name: np.zeros(labels.shape, np.float32) for name in MASK_NAMES}
+            for name, values in ids.items():
+                masks[name] = np.isin(labels, values).astype(np.float32)
+            masks["background"] = (labels == 0).astype(np.float32)
+            for name in MASK_NAMES:
+                masks[name] = cv2.resize(masks[name], (x2 - x1, y2 - y1), interpolation=cv2.INTER_LINEAR)
+        except Exception:
+            masks = None
+    record.masks = masks if masks is not None else fallback_masks(crop.shape)
+    return record
+
+
