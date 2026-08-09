@@ -82,6 +82,41 @@ def fallback_masks(shape):
     return masks
 
 
+def soften_mask(mask: np.ndarray, sigma: float) -> np.ndarray:
+    """Feather a binary mask the FaceFusion way: blur, then clip to [0.5, 1] and
+    rescale. The interior stays a hard 1.0 (no ghosting under the face) and the
+    falloff is confined to the true boundary instead of bleeding outward."""
+    if sigma <= 0:
+        return np.clip(mask, 0, 1)
+    k = int(sigma * 4) | 1
+    blurred = cv2.GaussianBlur(np.clip(mask, 0, 1).astype(np.float32), (k, k), sigma)
+    return np.clip((np.clip(blurred, 0.5, 1.0) - 0.5) * 2.0, 0, 1)
+
+
+def build_face_mask(bbox, shape, landmarks=None, feather=.25):
+    """Face-region mask for color/sharpen/occlusion stages.
+
+    Uses the landmark convex hull (expanded ~12% so it reaches the hairline)
+    when dense landmarks are available, which follows head roll; falls back to
+    an axis-aligned ellipse from the padded bbox otherwise.
+    """
+    h, w = shape[:2]
+    x1, y1, x2, y2 = bbox
+    mask = np.zeros((h, w), np.float32)
+    cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+    ax, ay = max(2, (x2 - x1) // 2), max(2, (y2 - y1) // 2)
+    pts = None if landmarks is None else np.asarray(landmarks, np.float32).reshape(-1, 2)
+    if pts is not None and len(pts) >= 8:
+        center = pts.mean(axis=0)
+        grown = center + (pts - center) * 1.12
+        hull = cv2.convexHull(grown.astype(np.int32))
+        cv2.fillConvexPoly(mask, hull, 1.0)
+    else:
+        cv2.ellipse(mask, (cx, cy), (ax, ay), 0, 0, 360, 1.0, -1)
+    sigma = max(3.0, min(ax, ay) * feather * .5)
+    return soften_mask(mask, sigma)
+
+
 
 
 def parse_face(image, record: FaceRecord, parser=None):
@@ -108,3 +143,28 @@ def parse_face(image, record: FaceRecord, parser=None):
     return record
 
 
+
+
+def composite_region_mask(record: FaceRecord, shape, names, dilate_frac=.02,
+                          feather_frac=.02):
+    """Lift the record's parsed (crop-space) region masks into a full-frame,
+    softly feathered union. Returns None when none of `names` were parsed so
+    callers can fall back to a geometric mask."""
+    masks = getattr(record, "masks", None) or {}
+    planes = [np.asarray(masks[name], np.float32) for name in names
+              if masks.get(name) is not None]
+    if not planes:
+        return None
+    h, w = shape[:2]
+    x1, y1, x2, y2 = record.bbox
+    bw, bh = max(1, x2 - x1), max(1, y2 - y1)
+    union = np.clip(sum(planes), 0, 1)
+    if union.shape[1] != bw or union.shape[0] != bh:
+        union = cv2.resize(union, (bw, bh), interpolation=cv2.INTER_LINEAR)
+    canvas = np.zeros((h, w), np.float32)
+    canvas[y1:y2, x1:x2] = union
+    k = max(3, int(min(bw, bh) * dilate_frac)) | 1
+    region = cv2.dilate(canvas[y1:y2, x1:x2], np.ones((k, k), np.uint8))
+    canvas[y1:y2, x1:x2] = region
+    sigma = max(2.0, min(bw, bh) * feather_frac)
+    return soften_mask(canvas, sigma)
