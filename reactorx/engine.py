@@ -117,6 +117,56 @@ def build_face_mask(bbox, shape, landmarks=None, feather=.25):
     return soften_mask(mask, sigma)
 
 
+def recover_occlusions(target, result, face_mask, sensitivity=.6):
+    """Restore only thin intrusions (hair strands, glasses arms) at the face
+    boundary. Reverted pixels are blended at `sensitivity` so mistakes wash out
+    instead of hard-replacing swapped skin with uncorrected target pixels."""
+    h, w = target.shape[:2]
+    roi = face_mask > .1
+    if not np.any(roi) or sensitivity <= 0:
+        return result
+    gray_t = cv2.cvtColor(target, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    gray_r = cv2.cvtColor(result, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    diff = np.abs(gray_t - gray_r)
+    gx_t = cv2.Sobel(gray_t, cv2.CV_32F, 1, 0)
+    gy_t = cv2.Sobel(gray_t, cv2.CV_32F, 0, 1)
+    edges_t = np.abs(gx_t) + np.abs(gy_t)
+    gx_r = cv2.Sobel(gray_r, cv2.CV_32F, 1, 0)
+    gy_r = cv2.Sobel(gray_r, cv2.CV_32F, 0, 1)
+    edges_r = np.abs(gx_r) + np.abs(gy_r)
+    lost = (edges_t > 60) & (edges_r < edges_t * .6)
+    thr = max(20.0, float(np.percentile(diff[roi], 85)))
+    candidates = ((lost & (diff > thr) & roi)).astype(np.uint8)
+    face_bin = (face_mask > .5).astype(np.uint8)
+    k = max(3, int(min(h, w) * .008))
+    kernel = np.ones((k, k), np.uint8)
+    inner = cv2.erode(face_bin, kernel)
+    boundary = np.clip(face_bin - inner, 0, 1).astype(np.uint8)
+    # Only consider occluders within a narrow band around the boundary; deep
+    # interior edge loss is almost always legitimate swap smoothing.
+    band_kernel = max(3, k * 3) | 1
+    band = cv2.dilate(boundary, np.ones((band_kernel, band_kernel), np.uint8))
+    candidates &= band
+    num, labels, stats, _ = cv2.connectedComponentsWithStats(candidates, 8)
+    occ = np.zeros_like(candidates)
+    min_area = max(6, int(face_bin.sum() * .0008))
+    max_area = int(face_bin.sum() * .12)
+    for comp in range(1, num):
+        area = int(stats[comp, cv2.CC_STAT_AREA])
+        if area < min_area or area > max_area:
+            continue
+        region = labels == comp
+        if np.any(boundary[region]):
+            occ[region] = 1
+    if not np.any(occ):
+        return result
+    fk = max(5, k * 2) | 1
+    occ = cv2.GaussianBlur(occ.astype(np.float32), (fk, fk), fk * .35)
+    occ = np.clip(occ, 0, 1) * float(sensitivity)
+    return (result.astype(np.float32) * (1 - occ[:, :, None]) +
+            target.astype(np.float32) * occ[:, :, None]).astype(np.uint8)
+
+
 
 
 def parse_face(image, record: FaceRecord, parser=None):
