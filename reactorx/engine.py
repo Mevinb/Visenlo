@@ -167,8 +167,6 @@ def recover_occlusions(target, result, face_mask, sensitivity=.6):
             target.astype(np.float32) * occ[:, :, None]).astype(np.uint8)
 
 
-
-
 def parse_face(image, record: FaceRecord, parser=None):
     x1, y1, x2, y2 = record.bbox
     crop = image[y1:y2, x1:x2]
@@ -193,6 +191,65 @@ def parse_face(image, record: FaceRecord, parser=None):
     return record
 
 
+
+
+def unsharp_mask(image: np.ndarray, kernel_size: int = 5, sigma: float = 1.0,
+                 amount: float = 0.5) -> np.ndarray:
+    """Apply unsharp masking to a full BGR image."""
+    if amount <= 0:
+        return image
+    blurred = cv2.GaussianBlur(image, (kernel_size | 1, kernel_size | 1), sigma)
+    detail = image.astype(np.float32) - blurred.astype(np.float32)
+    result = image.astype(np.float32) + detail * amount
+    return np.clip(result, 0, 255).astype(np.uint8)
+
+
+def sharpen_face_region(image: np.ndarray, face_mask: np.ndarray,
+                        amount: float = 0.5, sigma: float | None = None) -> np.ndarray:
+    """Apply unsharp masking only within the face mask region.
+
+    The mask is a float32 [0,1] array matching the image dimensions. `sigma`
+    sets the detail radius in pixels; callers should scale it with the face
+    size so small and large faces get proportionate sharpening (defaults to a
+    strength-coupled radius for backwards compatibility).
+    """
+    if amount <= 0:
+        return image
+    sigma = max(1.0, amount * 2.0) if sigma is None else max(1.0, float(sigma))
+    blurred = cv2.GaussianBlur(image, (0, 0), sigma)
+    detail = image.astype(np.float32) - blurred.astype(np.float32)
+    sharpened = image.astype(np.float32) + detail * amount
+    alpha = np.clip(face_mask, 0, 1)[:, :, None]
+    result = sharpened * alpha + image.astype(np.float32) * (1 - alpha)
+    return np.clip(result, 0, 255).astype(np.uint8)
+
+
+def color_match(swapped, target, mask, strength=.75):
+    """Reinhard-style LAB statistics transfer toward the target, restricted to
+    `mask`. Returns a float32 frame so callers quantize to uint8 only once."""
+    if strength <= 0:
+        return swapped.astype(np.float32)
+    lab_s = cv2.cvtColor(swapped, cv2.COLOR_BGR2LAB).astype(np.float32)
+    lab_t = cv2.cvtColor(target, cv2.COLOR_BGR2LAB).astype(np.float32)
+    active = mask > .25
+    if int(active.sum()) < 32:
+        return swapped.astype(np.float32)
+    for channel in range(3):
+        plane = lab_s[:, :, channel]
+        source_values = plane[active]
+        target_values = lab_t[:, :, channel][active]
+        ratio = 1 + (target_values.std() / max(source_values.std(), 1e-3) - 1) * strength
+        plane = (plane - source_values.mean()) * ratio + (
+            source_values.mean() + (target_values.mean() - source_values.mean()) * strength
+        )
+        lab_s[:, :, channel] = np.clip(plane, 0, 255)
+    matched = cv2.cvtColor(lab_s.astype(np.uint8), cv2.COLOR_LAB2BGR).astype(np.float32)
+    return matched * mask[:, :, None] + swapped.astype(np.float32) * (1 - mask[:, :, None])
+
+
+def cosine(a, b):
+    a, b = np.asarray(a), np.asarray(b)
+    return float(np.dot(a, b) / max(np.linalg.norm(a) * np.linalg.norm(b), 1e-8))
 
 
 def composite_region_mask(record: FaceRecord, shape, names, dilate_frac=.02,
