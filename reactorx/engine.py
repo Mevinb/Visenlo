@@ -191,6 +191,21 @@ def parse_face(image, record: FaceRecord, parser=None):
     return record
 
 
+def weighted_identity(records: List[FaceRecord]) -> np.ndarray:
+    usable = [record for record in records if record.embedding is not None and record.quality > 0]
+    if not usable:
+        raise RuntimeError("No usable reference face embeddings")
+    vectors = np.asarray([record.embedding for record in usable], np.float32)
+    weights = np.asarray([max(record.quality, .05) for record in usable], np.float32)
+    vector = (vectors * (weights / weights.sum())[:, None]).sum(axis=0)
+    return vector / max(np.linalg.norm(vector), 1e-8)
+
+
+def virtual_face(embedding, source_face):
+    """Provide inswapper's expected face object with an aggregate identity."""
+    result = SimpleNamespace(**getattr(source_face, "__dict__", {}))
+    result.normed_embedding = np.asarray(embedding, np.float32)
+    return result
 
 
 def unsharp_mask(image: np.ndarray, kernel_size: int = 5, sigma: float = 1.0,
