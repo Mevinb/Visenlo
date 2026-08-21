@@ -273,3 +273,42 @@ class ReactorXPipeline:
                     best, bigger)
         return self._detect(image, det_size=bigger)
 
+    def _restoration_keeps_identity(self, aligned, restored, identity, target_record):
+        """Return True if CodeFormer restoration preserves the swapped identity.
+
+        Embeds the aligned swapped crop and the restored crop with the recognition
+        model directly (using the standard alignment template), and compares their
+        reference-identity similarity. Falls back to accepting if embedding fails.
+        """
+        try:
+            swap_embed = self._embed_aligned(aligned, aligned.shape[0])
+            restored_embed = self._embed_aligned(restored, restored.shape[0])
+        except Exception:
+            return True
+        if swap_embed is None or restored_embed is None:
+            return True
+        swap_sim = cosine(identity, swap_embed)
+        restored_sim = cosine(identity, restored_embed)
+        return restored_sim >= max(swap_sim * .95, swap_sim - .10)
+
+    def _embed_aligned(self, crop, size):
+        """Embed an aligned face crop using the recognition model directly."""
+        from types import SimpleNamespace
+        recognition = self._analysis.models.get("recognition")
+        if recognition is None:
+            return None
+        face = SimpleNamespace()
+        face.kps = arcface_kps(size)
+        try:
+            return np.asarray(recognition.get(crop, face), np.float32).reshape(-1)
+        except Exception:
+            return None
+
+    def _run_swap(self, swapper, image, record, source, boost, paste_back=True):
+        """Run the loaded swapper; boost>1 routes through the pixel-boost path."""
+        if boost > 1:
+            from .boost import inswapper_boost_get
+            return inswapper_boost_get(swapper, image, record.face, source,
+                                       boost, paste_back=paste_back)
+        return swapper.get(image, record.face, source, paste_back=paste_back)
+
