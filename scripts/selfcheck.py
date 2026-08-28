@@ -42,7 +42,16 @@ def main():
         soften_mask,
         weighted_identity,
     )
-    from reactorx.pipeline import PipelineConfig, ReactorXPipeline, arcface_kps
+    from reactorx.pipeline import (
+        PipelineConfig,
+        ReactorXPipeline,
+        allocate_output_path,
+        arcface_kps,
+        gender_label,
+        parse_swapper_spec,
+        select_target_record,
+        source_gender_vote,
+    )
 
     # --- arcface template matches insightface's estimate_norm destination ---
     try:
@@ -166,21 +175,89 @@ def main():
     agg = weighted_identity([r_hi, r_lo])
     check("identity aggregation dominated by high-quality ref", agg[0] > agg[1])
 
+    # --- gender-based target selection ---
+    from reactorx.engine import FaceRecord
+
+    def gface(gender):
+        rec = FaceRecord(face=None, bbox=(0, 0, 10, 10),
+                         landmarks=np.zeros((5, 2), np.float32),
+                         embedding=None, score=.9)
+        rec.gender = gender
+        return rec
+
+    f1, f2, m1 = gface(0), gface(0), gface(1)
+    u = gface(None)
+    plain = FaceRecord(face=None, bbox=(0, 0, 10, 10),
+                       landmarks=np.zeros((5, 2), np.float32),
+                       embedding=None, score=.9)
+    check("FaceRecord gender/age default to None",
+          plain.gender is None and plain.age is None)
+    check("gender_label maps ids", gender_label(0) == "F" and gender_label(1) == "M"
+          and gender_label(None) == "?")
+    check("source_gender_vote majority female", source_gender_vote([f1, f2, m1]) == 0)
+    check("source_gender_vote majority male", source_gender_vote([f1, m1, gface(1)]) == 1)
+    check("source_gender_vote tie falls back to first",
+          source_gender_vote([f1, m1]) == 0)
+    check("source_gender_vote all-unknown is None", source_gender_vote([u, u]) is None)
+    sel = select_target_record([f1, f2, m1], "gender", 0, 0)
+    check("gender mode picks leftmost match", sel is f1)
+    sel = select_target_record([m1, f1], "gender", 0, 0)
+    check("gender mode skips non-matching left faces", sel is f1)
+    check("gender mode no-match returns None",
+          select_target_record([m1, gface(1)], "gender", 0, 0) is None)
+    check("gender mode unknown source gender returns None",
+          select_target_record([f1], "gender", 0, None) is None)
+    check("index mode still bounds-checks",
+          select_target_record([f1, m1], "index", 1, None) is m1)
+    try:
+        select_target_record([f1], "index", 5, None)
+        check("index mode out-of-range raises", False)
+    except ValueError:
+        check("index mode out-of-range raises", True)
+
     # --- config defaults ---
     cfg = PipelineConfig()
     check("reference_quality raised to .20", abs(cfg.reference_quality - .20) < 1e-9)
     check("occluder enabled by default", cfg.occluder_enabled)
     check("det_size ceiling configured", cfg.det_size_max >= cfg.det_size)
+    check("swap auto-save enabled by default", cfg.save_swaps)
+
+    # --- auto-save output naming (date + zero-padded counter) ---
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        first = Path(allocate_output_path(tmp, stamp="2026-08-26"))
+        first.write_bytes(b"x")
+        second = Path(allocate_output_path(tmp, stamp="2026-08-26"))
+        second.write_bytes(b"x")
+        third = Path(allocate_output_path(tmp, stamp="2026-08-26"))
+        next_day = Path(allocate_output_path(tmp, stamp="2026-08-27"))
+    check("output naming starts at 00", first.name == "2026-08-26_00.png",
+          f"got {first.name}")
+    check("output naming keeps counting", second.name == "2026-08-26_01.png"
+          and third.name == "2026-08-26_02.png",
+          f"got {second.name}, {third.name}")
+    check("output naming resets per date", next_day.name == "2026-08-27_00.png",
+          f"got {next_day.name}")
+    check("standard swapper spec keeps model name",
+          parse_swapper_spec("inswapper_128.onnx") == ("inswapper_128.onnx", 1))
+    check("boost swapper spec resolves installed model",
+          parse_swapper_spec("inswapper_128.onnx@512") == ("inswapper_128.onnx", 4))
+    check("legacy boost spec gains onnx extension",
+          parse_swapper_spec("inswapper_128@256") == ("inswapper_128.onnx", 2))
 
     # --- pipeline object constructs without loading models ---
     pipe = ReactorXPipeline(str(ROOT / "models"), cfg)
     new_cfg = PipelineConfig(color_strength=.5)
     pipe.update_config(new_cfg)
     check("update_config swaps atomically", pipe.config.color_strength == .5)
+    check("outputs directory sits beside the project root",
+          Path(pipe.output_dir).resolve() == (ROOT / "outputs").resolve(),
+          f"output_dir={pipe.output_dir}")
 
     # --- model adapters load and run when present ---
     bisenet_path = ROOT / "models" / "bisenet_resnet_34.onnx"
     xseg_path = ROOT / "models" / "xseg_1.onnx"
+    codeformer_path = ROOT / "models" / "codeformer.onnx"
     if bisenet_path.is_file():
         from reactorx.parsing import BisenetParser
         parser = BisenetParser(str(bisenet_path))
@@ -201,8 +278,31 @@ def main():
             SimpleNamespace(face=SimpleNamespace(kps=ffhq_like)),
             np.zeros((400, 400, 3), np.uint8))
         check("xseg full-frame mask", occ_mask is None or occ_mask.shape == (400, 400))
+
+        class _KeepMaskSession:
+            def run(self, *_args, **_kwargs):
+                return [np.ones((1, 256, 256, 1), np.float32)]
+
+        polarity_probe = object.__new__(XSegOccluder)
+        polarity_probe.size = 256
+        polarity_probe.session = _KeepMaskSession()
+        polarity_probe.input_name = "input"
+        polarity_probe.output_name = "output"
+        occ = polarity_probe.detect(np.zeros((256, 256, 3), np.uint8))
+        check("xseg face keep mask is inverted to occlusion",
+              occ.shape == (256, 256) and float(occ.max()) == 0.0)
     else:
         print("[skip] xseg model not present")
+    if codeformer_path.is_file():
+        from reactorx.restoration import CodeFormer
+        restorer = CodeFormer(str(ROOT / "models"))
+        synthetic_face = rng.integers(0, 255, (512, 512, 3), dtype=np.uint8)
+        restored = restorer.restore_aligned(synthetic_face)
+        check("codeformer restores aligned crop",
+              restored.shape == (512, 512, 3) and restored.dtype == np.uint8,
+              f"shape={restored.shape} dtype={restored.dtype}")
+    else:
+        print("[skip] codeformer model not present")
 
     # --- app imports ---
     import app  # noqa: F401

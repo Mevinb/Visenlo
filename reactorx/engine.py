@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
+
+logger = logging.getLogger("reactorx.engine")
 
 
 @dataclass
@@ -19,6 +22,10 @@ class FaceRecord:
     score: float
     quality: float = 0.0
     masks: Dict[str, np.ndarray] = field(default_factory=dict)
+    # 0 = female, 1 = male (from insightface's genderage model); None when the
+    # analysis pack does not provide it. Age is captured for future features.
+    gender: Optional[int] = None
+    age: Optional[int] = None
 
 
 MASK_NAMES = ("skin", "eyes", "eyebrows", "nose", "lips", "teeth",
@@ -185,7 +192,8 @@ def parse_face(image, record: FaceRecord, parser=None):
             masks["background"] = (labels == 0).astype(np.float32)
             for name in MASK_NAMES:
                 masks[name] = cv2.resize(masks[name], (x2 - x1, y2 - y1), interpolation=cv2.INTER_LINEAR)
-        except Exception:
+        except Exception as exc:
+            logger.warning("face parsing failed (%s); using geometric masks", exc)
             masks = None
     record.masks = masks if masks is not None else fallback_masks(crop.shape)
     return record

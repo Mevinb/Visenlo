@@ -6,7 +6,7 @@ imported or modified.
 
 Pipeline: detect -> dense landmarks -> align -> parse -> process references ->
 aggregate identity -> swap -> CodeFormer restoration (optional) -> color match ->
-occlusion recovery -> boundary blend -> identity verification.
+occlusion recovery -> boundary blend -> identity verification -> auto-save.
 
 ## Start
 
@@ -17,6 +17,45 @@ cd ReactorX
 
 Open `http://127.0.0.1:7860`. The first launch creates `.venv` and installs the
 Python packages. Use `./run.sh --host 0.0.0.0` to expose it on your LAN.
+
+## Swapping and saved outputs
+
+- **One input, one or many targets.** Select a single target image — or any
+  number of them at once — set the references/controls once, and press
+  *Run identity swap*. Every selected image is swapped against the same
+  references; results stream into the gallery as they finish and the report
+  lists status per image. A failing image is reported and skipped without
+  stopping the rest.
+- **Auto-save.** Every completed swap is written to `outputs/` as
+  `<date>_<NN>.png` — for example `outputs/2026-08-26_00.png`,
+  `2026-08-26_01.png`, ... The counter keeps incrementing for the day, skips
+  names already on disk, and restarts at 00 on a new date. The filename is
+  shown in the pipeline report; disable with `PipelineConfig.save_swaps=False`.
+
+## Gender-based face matching
+
+The **Face matching** control has two modes:
+
+- **Manual (target index)** (default) — swaps the target face at *Target face
+  index*, exactly as before.
+- **Gender match (auto)** — the pipeline reads the gender of the selected
+  reference face (the one at *Reference face index*) and swaps the
+  leftmost target face of that gender. The *Target face index* slider is
+  hidden in this mode.
+
+Example: a target group photo contains a man and a woman; the reference image
+is a woman. With *Gender match (auto)* only the woman's face in the target is
+replaced — the man is left untouched. If the target has no face matching the
+reference's gender, the swap fails with a clear message listing the detected
+target genders.
+
+Gender comes from the `genderage.onnx` attribute model included in the
+`buffalo_l` analysis pack (already present under
+`models/insightface/models/buffalo_l/`), so no extra download is needed.
+Genders are `F`/`M`; when several references are accepted the matched gender is
+a majority vote across them. The selected target face's gender and age also
+appear in the console log and the pipeline report (`gender-matched (F): target
+face 1 of 2`).
 
 ## Models
 

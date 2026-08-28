@@ -6,6 +6,7 @@ import logging
 import os
 import threading
 import time
+from collections import Counter
 from dataclasses import dataclass
 
 import cv2
@@ -46,6 +47,86 @@ _ARCFACE_BASE = np.array([
     [41.5493, 92.3655],
     [70.7299, 92.2041],
 ], np.float32)
+
+
+def allocate_output_path(directory, ext=".png", stamp=None):
+    """Return a non-clashing '<date>_<NN><ext>' path inside `directory`.
+
+    Numbering starts at 00 for each date and keeps incrementing, skipping
+    names already on disk so restarts continue the sequence instead of
+    overwriting previous swaps.
+    """
+    os.makedirs(directory, exist_ok=True)
+    prefix = stamp or time.strftime("%Y-%m-%d")
+    index = 0
+    while os.path.exists(os.path.join(directory, f"{prefix}_{index:02d}{ext}")):
+        index += 1
+    return os.path.join(directory, f"{prefix}_{index:02d}{ext}")
+
+
+def parse_swapper_spec(swapper_name):
+    """Return the model filename and optional pixel-boost factor."""
+    model_file, _, boost_raw = swapper_name.partition("@")
+    if not os.path.splitext(model_file)[1]:
+        model_file += ".onnx"
+    boost = 1
+    if boost_raw:
+        if not boost_raw.isdigit():
+            raise ValueError(f"Invalid pixel-boost suffix: @{boost_raw}")
+        requested = int(boost_raw)
+        # UI suffixes name the desired aligned resolution; boost.py expects
+        # the scale factor relative to inswapper's native 128px resolution.
+        if requested in (256, 512):
+            boost = requested // 128
+        elif requested in (2, 4):
+            boost = requested
+        else:
+            raise ValueError(f"Unsupported pixel-boost size: @{requested}")
+    return model_file, boost
+
+
+def gender_label(gender):
+    """Human label for an insightface gender id (0 female, 1 male)."""
+    if gender is None:
+        return "?"
+    return "M" if int(gender) == 1 else "F"
+
+
+def source_gender_vote(records):
+    """Majority-vote the gender (0 female, 1 male) across reference records.
+
+    Ties fall back to the first known gender; returns None when no record
+    carries gender information (e.g. an analysis pack without genderage).
+    """
+    known = [record.gender for record in records if record.gender is not None]
+    if not known:
+        return None
+    females = sum(1 for gender in known if int(gender) == 0)
+    males = len(known) - females
+    if females == males:
+        return int(known[0])
+    return 0 if females > males else 1
+
+
+def select_target_record(records, match_mode="index", target_index=0, source_gender=None):
+    """Choose the single target face to swap.
+
+    match_mode="index" (default): the face at `target_index`, bounds-checked.
+    match_mode="gender": the leftmost face matching `source_gender` (records are
+    already sorted left-to-right), or None when nothing matches.
+    """
+    if match_mode != "gender":
+        if not 0 <= int(target_index) < len(records):
+            raise ValueError(
+                f"Target face index {target_index} is out of range; "
+                f"the target has {len(records)} face(s)")
+        return records[int(target_index)]
+    if source_gender is None:
+        return None
+    for record in records:
+        if record.gender == source_gender:
+            return record
+    return None
 
 
 def arcface_kps(size):
@@ -119,12 +200,16 @@ class PipelineConfig:
     det_size: int = 640
     det_size_max: int = 1280
     occluder_enabled: bool = True
+    save_swaps: bool = True
 
 
 class ReactorXPipeline:
     def __init__(self, models_path: str, config: PipelineConfig | None = None):
         self.models_path = models_path
         self.config = config or PipelineConfig()
+        # Swapped results land in outputs/ next to the project root (the parent
+        # of the models directory), named <date>_<NN>.png.
+        self.output_dir = os.path.join(os.path.dirname(os.path.abspath(models_path)), "outputs")
         self._lock = threading.RLock()
         self._analysis = None
         self._swapper = None
@@ -254,6 +339,8 @@ class ReactorXPipeline:
                                 getattr(face, "normed_embedding", None),
                                 float(getattr(face, "det_score", 0)))
             record.quality = quality_score(image, record)
+            record.gender = getattr(face, "gender", None)
+            record.age = getattr(face, "age", None)
             records.append(record)
         return sorted(records, key=lambda record: record.bbox[0])
 
@@ -313,17 +400,20 @@ class ReactorXPipeline:
         return swapper.get(image, record.face, source, paste_back=paste_back)
 
     def process(self, references: list[np.ndarray], target: np.ndarray, source_index=0,
-                target_index=0, swapper_name="inswapper_128.onnx"):
+                target_index=0, swapper_name="inswapper_128.onnx", match_mode="index"):
         started = time.perf_counter()
+        match_mode = str(match_mode or "index").strip().lower()
+        if match_mode not in ("index", "gender"):
+            raise ValueError("match_mode must be 'index' or 'gender'")
         logger.info("=" * 60)
         logger.info("ReactorX pipeline started")
         logger.info("  swapper:   %s", swapper_name)
         logger.info("  target:    %dx%d", target.shape[1], target.shape[0])
         logger.info("  references: %d", len(references))
+        logger.info("  face matching: %s", match_mode)
         with self._lock:
             cfg = self.config
-            model_file, _, boost_raw = swapper_name.partition("@")
-            boost = int(boost_raw) if boost_raw.isdigit() and int(boost_raw) > 1 else 1
+            model_file, boost = parse_swapper_spec(swapper_name)
             swapper = self._load(model_file)
             logger.info("  config:    CodeFormer=%s (w=%.2f), sharpen=%.2f, color=%.2f, "
                          "parsing=%s, occluder=%s%s",
@@ -347,9 +437,11 @@ class ReactorXPipeline:
                         f"this reference has {len(faces)} face(s)")
                 record = faces[int(source_index)]
                 parse_face(image, record, self._parser)
-                logger.info("    selected face %d: bbox=%s quality=%.3f score=%.3f",
+                logger.info("    selected face %d: bbox=%s quality=%.3f score=%.3f "
+                            "gender=%s age=%s",
                            int(source_index),
-                           tuple(map(int, record.bbox)), record.quality, record.score)
+                           tuple(map(int, record.bbox)), record.quality, record.score,
+                           gender_label(record.gender), record.age)
                 if record.quality >= cfg.reference_quality:
                     reference_records.append(record)
                 else:
@@ -361,19 +453,30 @@ class ReactorXPipeline:
                 raise RuntimeError("No usable reference face passed the quality threshold")
             if not targets:
                 raise RuntimeError("No target face passed the size threshold")
-            if not 0 <= int(target_index) < len(targets):
-                raise ValueError(
-                    f"Target face index {target_index} is out of range; "
-                    f"the target has {len(targets)} face(s)")
-
             identity = weighted_identity(reference_records)
             logger.info("  identity: aggregated from %d reference(s), norm=%.4f",
                        len(reference_records), float(np.linalg.norm(identity)))
-            target_record = targets[int(target_index)]
-            logger.info("  target face %d: bbox=%s quality=%.3f score=%.3f",
-                       int(target_index),
-                       tuple(map(int, target_record.bbox)),
-                       target_record.quality, target_record.score)
+            source_gender = source_gender_vote(reference_records) if match_mode == "gender" else None
+            if match_mode == "gender" and source_gender is None:
+                raise ValueError(
+                    "Gender detection is unavailable for the reference face(s); "
+                    "the analysis pack appears to lack the genderage model")
+            target_record = select_target_record(targets, match_mode,
+                                                 int(target_index), source_gender)
+            if target_record is None:
+                counts = Counter(gender_label(record.gender) for record in targets)
+                detail = ", ".join(f"{n} {label}" for label, n in counts.most_common()) or "unknown"
+                raise ValueError(
+                    f"No target face matches the reference gender "
+                    f"({gender_label(source_gender)}); the target has "
+                    f"{len(targets)} face(s) ({detail})")
+            face_idx = next(i for i, record in enumerate(targets)
+                            if record is target_record)
+            logger.info("  target face %d: bbox=%s quality=%.3f score=%.3f "
+                        "gender=%s age=%s",
+                       face_idx, tuple(map(int, target_record.bbox)),
+                       target_record.quality, target_record.score,
+                       gender_label(target_record.gender), target_record.age)
             parse_face(target, target_record, self._parser)
             source = virtual_face(identity, reference_records[0].face)
 
@@ -472,12 +575,33 @@ class ReactorXPipeline:
             if cfg.occluder_enabled and self._occluder is not None:
                 extras.append("occluder")
             extra_str = f" | {' | '.join(extras)}" if extras else ""
+            match_str = (""
+                         if match_mode != "gender" else
+                         f" | gender-matched ({gender_label(source_gender)}): "
+                         f"target face {face_idx} of {len(targets)}")
             logger.info("  identity: confidence=%.3f | %s | threshold=%.2f",
                         confidence, verdict, cfg.verification_threshold)
             logger.info("  total time: %.2fs", time.perf_counter() - started)
+
+            # Persist every completed swap as <date>_<NN>.png; a failed save
+            # must never discard a successful swap, so only warn on error.
+            saved_note = ""
+            if cfg.save_swaps:
+                try:
+                    out_path = allocate_output_path(self.output_dir)
+                    ok, encoded = cv2.imencode(".png", result)
+                    if ok:
+                        encoded.tofile(out_path)
+                        logger.info("  saved swapped image: %s", out_path)
+                        saved_note = f" | saved {os.path.basename(out_path)}"
+                    else:
+                        logger.warning("  PNG encoding failed; swap not saved")
+                except Exception as exc:
+                    logger.warning("  could not save swapped image: %s", exc)
+
             logger.info("=" * 60)
             status = (f"ReactorX complete | references accepted: {len(reference_records)} | "
                       f"identity confidence: {confidence:.3f} | {verdict} | "
-                      f"restoration: {restoration}{extra_str} | "
-                      f"{time.perf_counter() - started:.2f}s")
+                      f"restoration: {restoration}{extra_str}{match_str} | "
+                      f"{time.perf_counter() - started:.2f}s{saved_note}")
             return result, status

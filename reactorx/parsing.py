@@ -3,8 +3,8 @@
 Models follow the FaceFusion conventions:
 - bisenet_resnet_34.onnx: 512x512 RGB input, ImageNet-normalized, NCHW;
   outputs a 19-class CelebAMask-HQ label map.
-- xseg_1.onnx: 256x256 RGB input scaled to [0,1], NHWC; outputs an occluder
-  probability map (high = something in front of the face).
+- xseg_1.onnx: 256x256 RGB input scaled to [0,1], NHWC; outputs a face keep
+  probability map, which this adapter converts to an occluder probability map.
 """
 
 from __future__ import annotations
@@ -88,10 +88,16 @@ class XSegOccluder:
         img = cv2.resize(crop, (self.size, self.size), interpolation=cv2.INTER_LINEAR)
         blob = (img[:, :, ::-1].astype(np.float32) / 255.0)[None]
         out = self.session.run([self.output_name], {self.input_name: blob})[0]
-        mask = np.asarray(out[0], np.float32)
-        while mask.ndim > 2:
-            mask = mask[0]
-        return np.clip(mask, 0, 1)
+        # squeeze() handles both NCHW (1,1,H,W) and NHWC (1,H,W,1) exports;
+        # anything else would silently mis-index under [0]-stripping.
+        keep_mask = np.squeeze(np.asarray(out, np.float32))
+        if keep_mask.ndim != 2:
+            raise ValueError(f"xseg_1 output has unsupported layout {np.asarray(out).shape}")
+        # XSeg emits high values for valid face pixels. ReactorX consumes an
+        # occluder mask (high = restore the original target), so invert in crop
+        # space before warping. Inverting after warp would mark the entire area
+        # outside the aligned crop as occluded.
+        return 1.0 - np.clip(keep_mask, 0, 1)
 
     def map_to_frame(self, record, target: np.ndarray):
         """Return a full-frame occluder mask for this face, or None."""

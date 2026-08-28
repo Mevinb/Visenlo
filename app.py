@@ -33,8 +33,8 @@ body { background: #10110f; }
 
 SWAPPER_CHOICES = [
     "inswapper_128.onnx",
-    "inswapper_128@256",
-    "inswapper_128@512",
+    "inswapper_128.onnx@256",
+    "inswapper_128.onnx@512",
     "reswapper_256.onnx",
 ]
 
@@ -61,27 +61,55 @@ def _bgr(image):
     return cv2.cvtColor(np.asarray(image.convert("RGB")), cv2.COLOR_RGB2BGR)
 
 
-def run_swap(target, ref1, ref2, ref3, ref4, target_index, source_index,
+def _upload_path(item):
+    """Resolve a gr.File entry to a filesystem path (str or file object)."""
+    return item if isinstance(item, str) else getattr(item, "name", "")
+
+
+def run_swap(targets, ref1, ref2, ref3, ref4, target_index, source_index, match_mode,
              swapper_model, min_face_size, verify_threshold, color_strength,
              codeformer_enabled, codeformer_weight, sharpen_strength,
              occluder_enabled):
-    if target is None or ref1 is None:
-        raise gr.Error("A target image and Reference 1 are required.")
-    logger.info("Swap requested: swapper=%s target_face_idx=%d source_face_idx=%d "
-                "codeformer=%s sharpen=%.2f occluder=%s",
-                swapper_model, target_index, source_index,
+    """Swap one or many selected targets against the same references.
+
+    Streams results so the gallery and report update after each image; a
+    failing image is reported and skipped without stopping the rest. The
+    pipeline auto-saves every completed swap as <date>_<NN>.png.
+    """
+    if not targets:
+        raise gr.Error("Select at least one target image.")
+    if ref1 is None:
+        raise gr.Error("Reference 1 is required.")
+    mode = "index" if match_mode.startswith("Manual") else "gender"
+    files = list(targets) if isinstance(targets, (list, tuple)) else [targets]
+    logger.info("Swap requested: %d image(s), swapper=%s target_face_idx=%d "
+                "source_face_idx=%d match_mode=%s codeformer=%s sharpen=%.2f occluder=%s",
+                len(files), swapper_model, target_index, source_index, mode,
                 codeformer_enabled, sharpen_strength, occluder_enabled)
     references = [_bgr(image) for image in (ref1, ref2, ref3, ref4) if image is not None]
-    try:
-        result, status = get_pipeline(
-            min_face_size, verify_threshold, color_strength,
-            codeformer_enabled, codeformer_weight, sharpen_strength,
-            occluder_enabled).process(
-            references, _bgr(target), int(source_index), int(target_index), swapper_model
-        )
-    except Exception as exc:
-        raise gr.Error(str(exc)) from exc
-    return Image.fromarray(cv2.cvtColor(result, cv2.COLOR_BGR2RGB)), status
+    pipeline = get_pipeline(min_face_size, verify_threshold, color_strength,
+                            codeformer_enabled, codeformer_weight, sharpen_strength,
+                            occluder_enabled)
+    gallery, report = [], []
+    total = len(files)
+    for i, item in enumerate(files):
+        path = _upload_path(item)
+        name = Path(path).name if path else f"image {i + 1}"
+        # With a single image selected the plain name keeps the report clean;
+        # batches get numbered lines like "[2/5] photo.jpg: ...".
+        prefix = f"[{i + 1}/{total}] " if total > 1 else ""
+        try:
+            with Image.open(path) as image:
+                image.load()
+                result, status = pipeline.process(references, _bgr(image),
+                                                  int(source_index), int(target_index),
+                                                  swapper_model, match_mode=mode)
+            gallery.append(Image.fromarray(cv2.cvtColor(result, cv2.COLOR_BGR2RGB)))
+            report.append(f"{prefix}{name}: {status}")
+        except Exception as exc:
+            logger.warning("Swap failed for %s (%s)", name, exc)
+            report.append(f"{prefix}{name}: FAILED - {exc}")
+        yield gallery.copy(), "\n".join(report)
 
 
 def build_ui():
@@ -93,7 +121,10 @@ def build_ui():
         gr.Markdown("# ReactorX Swap Engine v1\nIdentity transfer with target geometry and scene preservation.", elem_classes="rx-title")
         with gr.Row():
             with gr.Column(scale=5):
-                target = gr.Image(type="pil", label="Target image", height=420)
+                targets = gr.File(file_count="multiple", file_types=["image"],
+                                  label="Target images (one or many)", height=420)
+                gr.Markdown("Select a single image or many - all of them are "
+                            "swapped with the references and controls below.")
             with gr.Column(scale=4):
                 with gr.Row():
                     ref1 = gr.Image(type="pil", label="Reference 1", height=200)
@@ -107,6 +138,14 @@ def build_ui():
                 source_index = gr.Slider(0, 10, value=0, step=1, label="Reference face index")
                 min_face_size = gr.Slider(24, 256, value=48, step=4, label="Minimum face size")
             with gr.Row():
+                match_mode = gr.Radio(
+                    choices=["Manual (target index)", "Gender match (auto)"],
+                    value="Manual (target index)",
+                    label="Face matching",
+                    info="Manual uses the target face index. Gender match detects the "
+                         "reference's gender and swaps the leftmost target face of that "
+                         "gender (target face index is then ignored).",
+                )
                 swapper_model = gr.Dropdown(
                     choices=SWAPPER_CHOICES,
                     value="inswapper_128.onnx",
@@ -121,16 +160,23 @@ def build_ui():
                 sharpen_strength = gr.Slider(0, 1, value=.5, step=.05, label="Sharpen strength", info="Single size-aware unsharp pass on the swapped face interior. Increases clarity without changing the swap model.")
             occluder_enabled = gr.Checkbox(value=True, label="Occlusion mask (XSeg)", info="Keeps hair strands, glasses and other objects in front of the face. Requires models/xseg_1.onnx (ignored if absent). Face parsing uses models/bisenet_resnet_34.onnx when present for tighter masks.")
             swap = gr.Button("Run identity swap", variant="primary")
-            output = gr.Image(type="pil", label="Final image", format="png")
-            status = gr.Textbox(label="Pipeline report", elem_classes="rx-status")
+            output = gr.Gallery(label="Swapped images", columns=3, height=420)
+            status = gr.Textbox(label="Pipeline report", lines=4, elem_classes="rx-status")
+
+            def _toggle_target_index(mode):
+                return gr.update(visible=mode.startswith("Manual"))
+
+            match_mode.change(_toggle_target_index, match_mode, target_index)
             swap.click(run_swap,
-                       [target, ref1, ref2, ref3, ref4, target_index, source_index,
-                        swapper_model, min_face_size, verify_threshold, color_strength,
-                        codeformer_enabled, codeformer_weight, sharpen_strength,
-                        occluder_enabled],
+                       [targets, ref1, ref2, ref3, ref4, target_index, source_index,
+                        match_mode, swapper_model, min_face_size, verify_threshold,
+                        color_strength, codeformer_enabled, codeformer_weight,
+                        sharpen_strength, occluder_enabled],
                        [output, status],
                        concurrency_limit=1)
-        gr.Markdown("Use only images you own or have permission to edit. ReactorX runs locally.")
+        gr.Markdown("Every completed swap is auto-saved to `outputs/` as "
+                    "`<date>_<NN>.png`. Use only images you own or have permission "
+                    "to edit. ReactorX runs locally.")
     return app
 
 
