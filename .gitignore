@@ -31,6 +31,9 @@ models/
 *.ckpt
 *.safetensors
 
+# ---------- Test data ----------
+testdata/
+
 # ---------- App runtime artifacts (contain YOUR images) ----------
 # Gradio caches uploads/flagged outputs here.
 .gradio/
