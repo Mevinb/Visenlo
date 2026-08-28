@@ -76,9 +76,9 @@ def parse_swapper_spec(swapper_name):
         requested = int(boost_raw)
         # UI suffixes name the desired aligned resolution; boost.py expects
         # the scale factor relative to inswapper's native 128px resolution.
-        if requested in (256, 512):
+        if requested in (256, 512, 1024, 2048):
             boost = requested // 128
-        elif requested in (2, 4):
+        elif requested in (2, 4, 8, 16):
             boost = requested
         else:
             raise ValueError(f"Unsupported pixel-boost size: @{requested}")

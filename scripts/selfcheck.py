@@ -69,7 +69,7 @@ def main():
     # --- pixel boost roundtrip ---
     rng = np.random.default_rng(0)
     frame = rng.integers(0, 255, (512, 512, 3), dtype=np.uint8)
-    for factor in (2, 4):
+    for factor in (2, 4, 8, 16):
         tiles = implode_tiles(frame, factor)
         back = explode_tiles(tiles, factor)
         check(f"implode/explode roundtrip x{factor}",
@@ -244,6 +244,10 @@ def main():
           parse_swapper_spec("inswapper_128.onnx@512") == ("inswapper_128.onnx", 4))
     check("legacy boost spec gains onnx extension",
           parse_swapper_spec("inswapper_128@256") == ("inswapper_128.onnx", 2))
+    check("boost 1024 resolves to factor 8",
+          parse_swapper_spec("inswapper_128.onnx@1024") == ("inswapper_128.onnx", 8))
+    check("boost 2048 resolves to factor 16",
+          parse_swapper_spec("inswapper_128.onnx@2048") == ("inswapper_128.onnx", 16))
 
     # --- pipeline object constructs without loading models ---
     pipe = ReactorXPipeline(str(ROOT / "models"), cfg)

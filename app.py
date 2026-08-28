@@ -35,6 +35,8 @@ SWAPPER_CHOICES = [
     "inswapper_128.onnx",
     "inswapper_128.onnx@256",
     "inswapper_128.onnx@512",
+    "inswapper_128.onnx@1024",
+    "inswapper_128.onnx@2048",
     "reswapper_256.onnx",
 ]
 
@@ -150,7 +152,7 @@ def build_ui():
                     choices=SWAPPER_CHOICES,
                     value="inswapper_128.onnx",
                     label="Face swap model",
-                    info="128px standard, @256/@512 pixel-boost (sharper, slower), or the 256px model.",
+                    info="128px standard, @256/@512/@1024/@2048 pixel-boost (sharper, slower), or the 256px model.",
                 )
                 verify_threshold = gr.Slider(0, 1, value=.30, step=.01, label="Identity threshold")
                 color_strength = gr.Slider(0, 1, value=.25, step=.05, label="Color matching", info="How much to blend the swapped face toward target lighting. Lower keeps the reference identity stronger.")

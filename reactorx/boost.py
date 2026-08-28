@@ -1,4 +1,4 @@
-"""Pixel-boost for inswapper_128: 256/512 output from the 128px model.
+"""Pixel-boost for inswapper_128: 256/512/1024/2048 output from the 128px model.
 
 Polyphase decomposition (FaceFusion technique): an aligned crop of
 128*factor px is split into factor^2 whole-face views downsampled by

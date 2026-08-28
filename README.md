@@ -124,9 +124,10 @@ This app is intended for images you own or have permission to edit.
 - **GPU acceleration.** The venv uses `onnxruntime-gpu` (CUDA 13 wheels are
   pulled in automatically via the `cuda,cudnn` extra). Without a GPU it falls
   back to CPU transparently.
-- **Pixel boost.** `inswapper_128@256` / `inswapper_128@512` run the 128px
-  model on polyphase tiles of a larger aligned crop (FaceFusion technique),
-  yielding 2x/4x sharper swaps with the same identity embedding.
+- **Pixel boost.** `inswapper_128@256` / `inswapper_128@512` / `@1024` / `@2048`
+  run the 128px model on polyphase tiles of a larger aligned crop (FaceFusion
+  technique), yielding 2x/4x/8x/16x sharper swaps with the same identity
+  embedding.
 - **Face parsing (BiSeNet).** When `models/bisenet_resnet_34.onnx` is present,
   color matching and sharpening use a skin/feature interior mask derived from
   CelebAMask-HQ parsing instead of a geometric ellipse, so hair and background
