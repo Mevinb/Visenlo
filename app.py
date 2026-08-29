@@ -29,6 +29,14 @@ APP_CSS = """
 body { background: #10110f; }
 .rx-title { letter-spacing: .08em; text-transform: uppercase; }
 .rx-status { border-left: 3px solid #b9ff66; padding-left: 12px; }
+/* Swapped images gallery — show full thumbnails and enable zoom/preview */
+.rx-gallery { height: auto !important; }
+.rx-gallery .grid-wrap,
+.rx-gallery .grid-container { height: auto !important; max-height: none !important; }
+.rx-gallery img { object-fit: contain !important; }
+.rx-gallery .thumbnail img { object-fit: contain !important; background: #1a1a1a; }
+/* Preview modal — ensure full image fits viewport and remains zoomable */
+.modal img { object-fit: contain !important; max-width: 92vw !important; max-height: 88vh !important; }
 """
 
 SWAPPER_CHOICES = [
@@ -162,7 +170,16 @@ def build_ui():
                 sharpen_strength = gr.Slider(0, 1, value=.5, step=.05, label="Sharpen strength", info="Single size-aware unsharp pass on the swapped face interior. Increases clarity without changing the swap model.")
             occluder_enabled = gr.Checkbox(value=True, label="Occlusion mask (XSeg)", info="Keeps hair strands, glasses and other objects in front of the face. Requires models/xseg_1.onnx (ignored if absent). Face parsing uses models/bisenet_resnet_34.onnx when present for tighter masks.")
             swap = gr.Button("Run identity swap", variant="primary")
-            output = gr.Gallery(label="Swapped images", columns=3, height=420)
+            output = gr.Gallery(
+                label="Swapped images — click any image to view full size / zoom",
+                columns=3,
+                height="auto",
+                object_fit="contain",
+                allow_preview=True,
+                show_fullscreen_button=True,
+                show_download_button=True,
+                elem_classes="rx-gallery",
+            )
             status = gr.Textbox(label="Pipeline report", lines=4, elem_classes="rx-status")
 
             def _toggle_target_index(mode):
