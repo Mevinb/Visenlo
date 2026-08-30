@@ -29,14 +29,39 @@ APP_CSS = """
 body { background: #10110f; }
 .rx-title { letter-spacing: .08em; text-transform: uppercase; }
 .rx-status { border-left: 3px solid #b9ff66; padding-left: 12px; }
-/* Swapped images gallery — show full thumbnails and enable zoom/preview */
-.rx-gallery { height: auto !important; }
-.rx-gallery .grid-wrap,
-.rx-gallery .grid-container { height: auto !important; max-height: none !important; }
-.rx-gallery img { object-fit: contain !important; }
-.rx-gallery .thumbnail img { object-fit: contain !important; background: #1a1a1a; }
-/* Preview modal — ensure full image fits viewport and remains zoomable */
-.modal img { object-fit: contain !important; max-width: 92vw !important; max-height: 88vh !important; }
+/* Swapped images gallery — fixed height with internal scroll, viewport-fixed lightbox.
+   Gradio 5 Gallery uses .grid-wrap (scroll container), .grid-container (grid),
+   .thumbnail-lg (tiles) and .preview (lightbox which is absolute by default). */
+.rx-gallery .grid-wrap { height: 520px !important; max-height: 520px !important; min-height: 280px !important; overflow-y: auto !important; overflow-x: hidden !important; border-radius: 8px; scrollbar-width: thin; scrollbar-color: #333 #1a1a1a; }
+.rx-gallery .grid-wrap.fixed-height { height: 520px !important; max-height: 520px !important; min-height: 280px !important; overflow-y: auto !important; overflow-x: hidden !important; }
+.rx-gallery .grid-container { height: auto !important; align-content: start; }
+.rx-gallery .thumbnail-lg img, .rx-gallery .gallery-item img { object-fit: contain !important; background: #1a1a1a; }
+.rx-gallery .preview { position: fixed !important; inset: 0 !important; width: 100vw !important; height: 100vh !important; max-width: 100vw !important; max-height: 100vh !important; display: flex !important; flex-direction: column !important; align-items: center !important; justify-content: center !important; background: rgba(16,17,15,0.92) !important; -webkit-backdrop-filter: blur(8px) !important; backdrop-filter: blur(8px) !important; z-index: 9999 !important; padding: 24px !important; box-sizing: border-box !important; border-radius: 0 !important; }
+.rx-gallery .preview:before { background: transparent !important; opacity: 1 !important; }
+.rx-gallery .preview .media-button { height: auto !important; flex: 1 !important; min-height: 0 !important; width: 100% !important; display: flex !important; align-items: center !important; justify-content: center !important; }
+.rx-gallery .preview .media-button img, .preview .media-button img { object-fit: contain !important; max-width: 92vw !important; max-height: 82vh !important; width: auto !important; height: auto !important; cursor: zoom-out; }
+.rx-gallery .thumbnails img { object-fit: cover !important; }
+@media (max-width: 900px) {
+  .rx-gallery .grid-wrap, .rx-gallery .grid-wrap.fixed-height { height: 420px !important; max-height: 60vh !important; }
+}
+/* Target images gallery — thumbnail grid with preview, auto-scales when many images */
+.rx-targets .grid-wrap { height: auto !important; max-height: 520px !important; min-height: 240px !important; overflow-y: auto !important; overflow-x: hidden !important; border-radius: 8px; scrollbar-width: thin; }
+.rx-targets .grid-wrap.fixed-height { max-height: 520px !important; overflow-y: auto !important; min-height: 260px !important; }
+.rx-targets .grid-container { height: auto !important; }
+.rx-targets .thumbnail-lg img, .rx-targets .gallery-item img { object-fit: contain !important; background: #1a1a1a; border-radius: 6px; }
+.rx-targets .preview { position: fixed !important; inset: 0 !important; width: 100vw !important; height: 100vh !important; max-width: 100vw !important; max-height: 100vh !important; display: flex !important; flex-direction: column !important; align-items: center !important; justify-content: center !important; background: rgba(16,17,15,0.92) !important; -webkit-backdrop-filter: blur(8px) !important; backdrop-filter: blur(8px) !important; z-index: 9999 !important; padding: 24px !important; box-sizing: border-box !important; border-radius: 0 !important; }
+.rx-targets .preview:before { background: transparent !important; opacity: 1 !important; }
+.rx-targets .preview .media-button { height: auto !important; flex: 1 !important; min-height: 0 !important; width: 100% !important; display: flex !important; align-items: center !important; justify-content: center !important; }
+.rx-targets .preview img, .rx-targets .preview .media-button img { object-fit: contain !important; max-width: 92vw !important; max-height: 86vh !important; width: auto !important; height: auto !important; cursor: zoom-out; }
+.rx-targets .empty { min-height: 220px; display: flex; align-items: center; justify-content: center; opacity: 0.85; }
+/* Make thumbnails shrink gracefully when many images are present:
+   override Gradio's fixed column count so the grid becomes responsive.
+   auto-fit collapses empty tracks — single image -> large full-width,
+   2-3 -> medium, 6+ -> small tiles that wrap. */
+.rx-targets .grid-container { grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)) !important; }
+@media (max-width: 900px) {
+  .rx-targets .grid-container { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)) !important; }
+}
 """
 
 SWAPPER_CHOICES = [
@@ -72,8 +97,33 @@ def _bgr(image):
 
 
 def _upload_path(item):
-    """Resolve a gr.File entry to a filesystem path (str or file object)."""
-    return item if isinstance(item, str) else getattr(item, "name", "")
+    """Resolve a gr.File entry to a filesystem path (str, Path, dict, or file object)."""
+    if isinstance(item, str):
+        return item
+    if isinstance(item, dict):
+        # Gradio FileData dict (e.g. {"name": "/tmp/...", "orig_name": "photo.jpg"})
+        return item.get("name") or item.get("path") or item.get("orig_name") or ""
+    # pathlib.Path or file-like with .name
+    if isinstance(item, Path):
+        return str(item)
+    return getattr(item, "name", str(item) if item is not None else "")
+
+
+def _target_path(item):
+    """Normalize a single File or Gallery entry to a filesystem path string.
+
+    Gallery interactive values are (path, caption) tuples where path may itself
+    be a FileData dict; File values are plain paths/dicts.
+    """
+    if isinstance(item, (list, tuple)):
+        if len(item) == 0:
+            return ""
+        # Gallery tuple (media, caption) — caption is str/None
+        if len(item) == 2 and (item[1] is None or isinstance(item[1], str)):
+            return _upload_path(item[0])
+        # Fallback: treat as generic sequence, take first element
+        return _upload_path(item[0])
+    return _upload_path(item)
 
 
 def run_swap(targets, ref1, ref2, ref3, ref4, target_index, source_index, match_mode,
@@ -103,7 +153,7 @@ def run_swap(targets, ref1, ref2, ref3, ref4, target_index, source_index, match_
     gallery, report = [], []
     total = len(files)
     for i, item in enumerate(files):
-        path = _upload_path(item)
+        path = _target_path(item)
         name = Path(path).name if path else f"image {i + 1}"
         # With a single image selected the plain name keeps the report clean;
         # batches get numbered lines like "[2/5] photo.jpg: ...".
@@ -117,8 +167,10 @@ def run_swap(targets, ref1, ref2, ref3, ref4, target_index, source_index, match_
             gallery.append(Image.fromarray(cv2.cvtColor(result, cv2.COLOR_BGR2RGB)))
             report.append(f"{prefix}{name}: {status}")
         except Exception as exc:
-            logger.warning("Swap failed for %s (%s)", name, exc)
-            report.append(f"{prefix}{name}: FAILED - {exc}")
+            logger.warning("Swap failed for %s (%s)", name, exc, exc_info=True)
+            # Avoid leaking absolute temp paths in user-visible report.
+            safe_msg = str(exc).replace(path, name) if path else str(exc)
+            report.append(f"{prefix}{name}: FAILED - {safe_msg}")
         yield gallery.copy(), "\n".join(report)
 
 
@@ -131,10 +183,25 @@ def build_ui():
         gr.Markdown("# ReactorX Swap Engine v1\nIdentity transfer with target geometry and scene preservation.", elem_classes="rx-title")
         with gr.Row():
             with gr.Column(scale=5):
-                targets = gr.File(file_count="multiple", file_types=["image"],
-                                  label="Target images (one or many)", height=420)
-                gr.Markdown("Select a single image or many - all of them are "
-                            "swapped with the references and controls below.")
+                targets = gr.Gallery(
+                    label="Target images (one or many) — drag & drop, click to add, click thumbnail to preview",
+                    columns=3,
+                    rows=2,
+                    height="auto",
+                    object_fit="contain",
+                    allow_preview=True,
+                    show_download_button=False,
+                    show_fullscreen_button=True,
+                    file_types=["image"],
+                    type="filepath",
+                    interactive=True,
+                    elem_classes="rx-targets",
+                )
+                with gr.Row():
+                    upload_btn = gr.UploadButton("Add images", file_count="multiple", file_types=["image"], variant="secondary", size="sm")
+                    clear_btn = gr.Button("Clear", variant="stop", size="sm")
+                gr.Markdown("Add one image or many — all are swapped with the references and controls below. "
+                            "Thumbnails scale down automatically when many images are added; click any thumbnail for full-size preview.")
             with gr.Column(scale=4):
                 with gr.Row():
                     ref1 = gr.Image(type="pil", label="Reference 1", height=200)
@@ -173,11 +240,12 @@ def build_ui():
             output = gr.Gallery(
                 label="Swapped images — click any image to view full size / zoom",
                 columns=3,
-                height="auto",
+                height=520,
                 object_fit="contain",
                 allow_preview=True,
                 show_fullscreen_button=True,
                 show_download_button=True,
+                interactive=False,
                 elem_classes="rx-gallery",
             )
             status = gr.Textbox(label="Pipeline report", lines=4, elem_classes="rx-status")
@@ -185,7 +253,30 @@ def build_ui():
             def _toggle_target_index(mode):
                 return gr.update(visible=mode.startswith("Manual"))
 
+            def _append_uploads(new_files, current_gallery):
+                """Merge newly uploaded files into the existing gallery without replacing."""
+                if not new_files:
+                    return current_gallery
+                # UploadButton may return single path or list
+                if isinstance(new_files, (str, dict)) or hasattr(new_files, "name"):
+                    new_files = [new_files]
+                # Also handle tuple from Gallery if needed
+                if not isinstance(new_files, (list, tuple)):
+                    new_files = [new_files]
+                added = []
+                for f in new_files:
+                    if isinstance(f, (list, tuple)):
+                        p = _target_path(f)
+                    else:
+                        p = _upload_path(f)
+                    if p:
+                        added.append((p, None))
+                cur = current_gallery or []
+                return cur + added
+
             match_mode.change(_toggle_target_index, match_mode, target_index)
+            upload_btn.upload(_append_uploads, inputs=[upload_btn, targets], outputs=[targets])
+            clear_btn.click(lambda: [], outputs=[targets])
             swap.click(run_swap,
                        [targets, ref1, ref2, ref3, ref4, target_index, source_index,
                         match_mode, swapper_model, min_face_size, verify_threshold,

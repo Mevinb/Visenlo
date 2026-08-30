@@ -54,14 +54,30 @@ def allocate_output_path(directory, ext=".png", stamp=None):
 
     Numbering starts at 00 for each date and keeps incrementing, skipping
     names already on disk so restarts continue the sequence instead of
-    overwriting previous swaps.
+    overwriting previous swaps. Uses atomic O_EXCL to avoid races between
+    concurrent processes/threads.
     """
+    import errno
+
     os.makedirs(directory, exist_ok=True)
     prefix = stamp or time.strftime("%Y-%m-%d")
     index = 0
-    while os.path.exists(os.path.join(directory, f"{prefix}_{index:02d}{ext}")):
-        index += 1
-    return os.path.join(directory, f"{prefix}_{index:02d}{ext}")
+    while True:
+        cand = os.path.join(directory, f"{prefix}_{index:02d}{ext}")
+        try:
+            # Atomic create — fails with EEXIST if another process already claimed it.
+            # Keep the zero-byte reservation so concurrent allocators skip it; caller
+            # will overwrite with the real PNG (Path.write_bytes / cv2.tofile both truncate).
+            fd = os.open(cand, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+            os.close(fd)
+            return cand
+        except OSError as exc:
+            if exc.errno == errno.EEXIST:
+                index += 1
+                if index > 9999:
+                    raise RuntimeError(f"Output directory exhausted: {directory}")
+                continue
+            raise
 
 
 def parse_swapper_spec(swapper_name):
@@ -158,10 +174,24 @@ class Reswapper256:
         self.session = ort.InferenceSession(model_path, providers=providers)
         self.input_names = [item.name for item in self.session.get_inputs()]
         self.output_name = self.session.get_outputs()[0].name
-        self.input_size = int(self.session.get_inputs()[0].shape[2])
+        # Robust input_size: handle NCHW/NHWC and dynamic dims (None/str).
+        inp_shape = self.session.get_inputs()[0].shape
+        cand = None
+        if len(inp_shape) == 4:
+            # Prefer spatial dims, ignore channel dim (3).
+            for idx in (2, 3, 1):
+                v = inp_shape[idx] if idx < len(inp_shape) else None
+                if isinstance(v, int) and v > 0 and v != 3:
+                    cand = v
+                    break
+        if cand is None:
+            cand = 256
+        self.input_size = int(cand)
         graph = onnx.load(model_path).graph
-        emap = next((item for item in graph.initializer if item.name == "emap"), graph.initializer[-1])
-        self.emap = numpy_helper.to_array(emap).astype(np.float32)
+        emap_init = next((item for item in graph.initializer if item.name == "emap"), None)
+        if emap_init is None:
+            raise RuntimeError(f"{model_path}: initializer 'emap' not found — incompatible reswapper_256.onnx")
+        self.emap = numpy_helper.to_array(emap_init).astype(np.float32)
 
     def get(self, image, target_face, source_face, paste_back=True):
         size = self.input_size
@@ -205,8 +235,9 @@ class PipelineConfig:
 
 class ReactorXPipeline:
     def __init__(self, models_path: str, config: PipelineConfig | None = None):
+        import copy
         self.models_path = models_path
-        self.config = config or PipelineConfig()
+        self.config = copy.deepcopy(config) if config is not None else PipelineConfig()
         # Swapped results land in outputs/ next to the project root (the parent
         # of the models directory), named <date>_<NN>.png.
         self.output_dir = os.path.join(os.path.dirname(os.path.abspath(models_path)), "outputs")
@@ -220,10 +251,22 @@ class ReactorXPipeline:
         self._codeformer = None
         os.makedirs(models_path, exist_ok=True)
 
+    def _fallback_providers_to_cpu(self, exc: Exception) -> bool:
+        """If CUDA provider failed (missing libcublas/cudnn), fall back to CPU once."""
+        msg = str(exc).lower()
+        if any(k in msg for k in ("cuda", "cublas", "cudnn", "provider")) and self._providers and any(
+            (p[0] if isinstance(p, tuple) else p) == "CUDAExecutionProvider" for p in self._providers
+        ):
+            logger.warning("CUDA provider failed (%s) — falling back to CPUExecutionProvider", exc)
+            self._providers = ["CPUExecutionProvider"]
+            return True
+        return False
+
     def update_config(self, config: PipelineConfig):
         """Swap configuration atomically; safe against a running process()."""
+        import copy
         with self._lock:
-            self.config = config
+            self.config = copy.deepcopy(config)
 
     def _ensure_parser(self):
         if self._parser is not None:
@@ -261,7 +304,7 @@ class ReactorXPipeline:
         self._codeformer.weight = self.config.codeformer_weight
         return self._codeformer
 
-    def _load(self, swapper_name):
+    def _load(self, swapper_name, boost: int = 1):
         try:
             import onnxruntime as ort
             from insightface.app import FaceAnalysis
@@ -273,8 +316,8 @@ class ReactorXPipeline:
             try:
                 # Load cuDNN/CUBLAS from pip nvidia wheels when present.
                 ort.preload_dlls()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("ort.preload_dlls() failed: %s", exc)
             available = ort.get_available_providers()
             # Fast conv-algo selection keeps session startup quick; a same-as-
             # requested arena avoids VRAM spikes when juggling several models.
@@ -289,27 +332,46 @@ class ReactorXPipeline:
             logger.info("ONNX providers: %s", self._providers)
         if self._analysis is None:
             logger.info("Loading FaceAnalysis (buffalo_l) from %s ...", insight_root)
-            use_cuda = any(isinstance(p, tuple) and p[0] == "CUDAExecutionProvider"
-                           for p in self._providers) or \
-                "CUDAExecutionProvider" in self._providers
-            self._analysis = FaceAnalysis(
-                name="buffalo_l",
-                root=insight_root,
-                providers=self._providers,
-            )
-            self._analysis.prepare(ctx_id=0 if use_cuda else -1, det_size=(640, 640))
-            logger.info("FaceAnalysis ready (CUDA=%s)", use_cuda)
+
+            def _init_analysis(providers):
+                use_cuda = any(
+                    (p[0] if isinstance(p, tuple) else p) == "CUDAExecutionProvider" for p in providers
+                )
+                analysis = FaceAnalysis(name="buffalo_l", root=insight_root, providers=providers)
+                analysis.prepare(ctx_id=0 if use_cuda else -1, det_size=(640, 640))
+                logger.info("FaceAnalysis ready (CUDA=%s)", use_cuda)
+                return analysis
+
+            try:
+                self._analysis = _init_analysis(self._providers)
+            except Exception as exc:
+                if self._fallback_providers_to_cpu(exc):
+                    self._analysis = _init_analysis(self._providers)
+                else:
+                    raise
         candidates = [os.path.join(self.models_path, swapper_name),
                       os.path.join(insight_root, "models", swapper_name)]
         path = next((candidate for candidate in candidates if os.path.isfile(candidate)), None)
         if path is None:
             raise FileNotFoundError(f"Place {swapper_name} in {self.models_path}")
+        # Pixel-boost is only implemented for the 128px model.
+        if boost > 1 and os.path.basename(path) == "reswapper_256.onnx":
+            raise ValueError("Pixel-boost (@256/@512/…) is not supported for reswapper_256.onnx")
         if self._swapper is None or path != self._swapper_path:
             logger.info("Loading swapper: %s", path)
-            if os.path.basename(path) == "reswapper_256.onnx":
-                self._swapper = Reswapper256(path, self._providers)
-            else:
-                self._swapper = model_zoo.get_model(path, providers=self._providers)
+
+            def _load_swapper(providers):
+                if os.path.basename(path) == "reswapper_256.onnx":
+                    return Reswapper256(path, providers)
+                return model_zoo.get_model(path, providers=providers)
+
+            try:
+                self._swapper = _load_swapper(self._providers)
+            except Exception as exc:
+                if self._fallback_providers_to_cpu(exc):
+                    self._swapper = _load_swapper(self._providers)
+                else:
+                    raise
             self._swapper_path = path
             logger.info("Swapper loaded: %s (%s)",
                        os.path.basename(path), self._swapper.__class__.__name__)
@@ -360,7 +422,7 @@ class ReactorXPipeline:
                     best, bigger)
         return self._detect(image, det_size=bigger)
 
-    def _restoration_keeps_identity(self, aligned, restored, identity, target_record):
+    def _restoration_keeps_identity(self, aligned, restored, identity, _target_record=None):
         """Return True if CodeFormer restoration preserves the swapped identity.
 
         Embeds the aligned swapped crop and the restored crop with the recognition
@@ -370,13 +432,17 @@ class ReactorXPipeline:
         try:
             swap_embed = self._embed_aligned(aligned, aligned.shape[0])
             restored_embed = self._embed_aligned(restored, restored.shape[0])
-        except Exception:
+        except Exception as exc:
+            logger.warning("identity check embedding failed (%s) — accepting restoration", exc)
             return True
         if swap_embed is None or restored_embed is None:
+            logger.warning("identity check could not embed — accepting restoration")
             return True
         swap_sim = cosine(identity, swap_embed)
         restored_sim = cosine(identity, restored_embed)
-        return restored_sim >= max(swap_sim * .95, swap_sim - .10)
+        # Clamp negative similarities — for very low swap_sim the 0.95x gate is too strict.
+        threshold = max(0.0, swap_sim * 0.95, swap_sim - 0.10)
+        return restored_sim >= threshold
 
     def _embed_aligned(self, crop, size):
         """Embed an aligned face crop using the recognition model directly."""
@@ -414,7 +480,7 @@ class ReactorXPipeline:
         with self._lock:
             cfg = self.config
             model_file, boost = parse_swapper_spec(swapper_name)
-            swapper = self._load(model_file)
+            swapper = self._load(model_file, boost)
             logger.info("  config:    CodeFormer=%s (w=%.2f), sharpen=%.2f, color=%.2f, "
                          "parsing=%s, occluder=%s%s",
                          cfg.codeformer_enabled, cfg.codeformer_weight,
@@ -526,7 +592,7 @@ class ReactorXPipeline:
             face_px = max(int(target_record.bbox[2] - target_record.bbox[0]), 1)
             if interior is None:
                 erode_k = max(3, int(face_px * .08)) | 1
-                interior = cv2.erode(face_mask, np.ones((erode_k, erode_k), np.float32))
+                interior = cv2.erode(face_mask, np.ones((erode_k, erode_k), np.uint8))
 
             corrected = color_match(swapped, target, interior, cfg.color_strength)
             result = np.clip(corrected, 0, 255).astype(np.uint8)

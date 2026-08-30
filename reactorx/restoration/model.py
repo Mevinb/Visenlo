@@ -31,9 +31,18 @@ class CodeFormerModel:
         else:
             face = bgr_face
         blob = to_onnx_blob(face)
+        # Weight dtype/layout varies by export: some are float32, this repo's is double scalar [].
+        inp1 = self.session.get_inputs()[1]
+        is_double = "double" in (inp1.type or "").lower()
+        dtype = np.float64 if is_double else np.float32
+        w_shape = inp1.shape
+        if w_shape and len(w_shape) == 1:
+            weight_arr = np.array([float(weight)], dtype=dtype)
+        else:
+            weight_arr = np.array(float(weight), dtype=dtype)
         outputs = self.session.run([self.output_name], {
             self.input_name: blob,
-            self.weight_name: np.asarray(float(weight), np.float64),
+            self.weight_name: weight_arr,
         })
         return from_onnx(outputs[0])
 

@@ -38,7 +38,7 @@ class CodeFormer:
         return self._model.restore(swapped_crop, self.weight)
 
     def enhance(self, swapped_crop: np.ndarray, swap_matrix: np.ndarray,
-                swap_size: int, target: np.ndarray) -> np.ndarray:
+                swap_size: int, target: np.ndarray, landmarks=None) -> np.ndarray:
         """Restore the aligned swapped crop and paste it back over the target."""
         restored = self.restore_aligned(swapped_crop)
-        return paste_restored_back(restored, swap_matrix, swap_size, target)
+        return paste_restored_back(restored, swap_matrix, swap_size, target, landmarks)

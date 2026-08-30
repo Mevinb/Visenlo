@@ -68,12 +68,15 @@ def paste_restored_back(restored: np.ndarray, swap_matrix: np.ndarray,
     face is blended in without a visible square edge and the target's native
     hair/background are preserved.
     """
-    size = restored.shape[0]
+    h_r, w_r = restored.shape[:2]
+    assert h_r == w_r, f"restored crop must be square, got {restored.shape[:2]}"
+    size = int(h_r)
     h, w = target.shape[:2]
     matrix = scale_affine(swap_matrix, swap_size, size)
     inverse = cv2.invertAffineTransform(matrix)
     warped = cv2.warpAffine(restored, inverse, (w, h), borderValue=0, flags=cv2.INTER_LANCZOS4)
     aligned_mask = build_aligned_face_mask(landmarks, swap_matrix, swap_size, size)
-    mask = cv2.warpAffine(aligned_mask, inverse, (w, h))
+    mask = cv2.warpAffine(aligned_mask, inverse, (w, h), flags=cv2.INTER_LINEAR,
+                          borderMode=cv2.BORDER_CONSTANT, borderValue=0.0)
     return (warped.astype(np.float32) * mask[:, :, None] +
             target.astype(np.float32) * (1 - mask[:, :, None])).astype(np.uint8)

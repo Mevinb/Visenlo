@@ -34,9 +34,15 @@ def inswapper_boost_get(swapper, image, target_face, source_face, factor,
     (fake, matrix) when paste_back=False or the blended full frame."""
     from insightface.utils import face_align
 
-    base = int(swapper.input_size[0])
+    # Support both tuple (128,128) and int (256) layouts.
+    raw = getattr(swapper, "input_size", 128)
+    if isinstance(raw, (list, tuple)):
+        base = int(raw[0])
+    else:
+        base = int(raw)
     big = base * factor
     aimg, matrix = face_align.norm_crop2(image, target_face.kps, big)
+    assert aimg.shape[0] == big and aimg.shape[1] == big, f"norm_crop2 returned {aimg.shape[:2]} != {big}"
 
     tiles = implode_tiles(aimg, factor)
 

@@ -17,6 +17,8 @@ cd ReactorX
 
 Open `http://127.0.0.1:7860`. The first launch creates `.venv` and installs the
 Python packages. Use `./run.sh --host 0.0.0.0` to expose it on your LAN.
+`./run.sh --port 7861` overrides the port; if the requested port is busy the
+launcher automatically picks the next free port and prints `using X instead`.
 
 ## Swapping and saved outputs
 
@@ -29,8 +31,24 @@ Python packages. Use `./run.sh --host 0.0.0.0` to expose it on your LAN.
 - **Auto-save.** Every completed swap is written to `outputs/` as
   `<date>_<NN>.png` — for example `outputs/2026-08-26_00.png`,
   `2026-08-26_01.png`, ... The counter keeps incrementing for the day, skips
-  names already on disk, and restarts at 00 on a new date. The filename is
+  names already on disk (atomic `O_EXCL` reservation, safe for concurrent runs),
+  and restarts at 00 on a new date. The filename is
   shown in the pipeline report; disable with `PipelineConfig.save_swaps=False`.
+
+### Viewing swapped images
+
+The **Swapped images** gallery shows thumbnails with `object-fit: contain` so the
+full image is visible (no cropping). Interaction:
+
+- **Click any thumbnail** to open the full-size preview (lightbox). The preview
+  uses `contain` and is constrained to `92vw × 86vh` so tall/wide images fit
+  without clipping.
+- The preview header has **download**, **fullscreen**, and **close** buttons.
+  Left/right halves of the preview image navigate to previous/next; `Esc` /
+  arrow keys also work.
+- The grid itself has **fullscreen** and **download** toggles and grows with
+  content (`height="auto"`, no 420px cap). A dark `1a1a1a` letterbox keeps
+  thumbnails readable.
 
 ## Gender-based face matching
 
@@ -83,7 +101,7 @@ their upstream hosts:
 ```bash
 BASE=https://huggingface.co/facefusion/models-3.0.0/resolve/main
 curl -L -o models/bisenet_resnet_34.onnx $BASE/bisenet_resnet_34.onnx   # face parsing, MIT
-curl -L -o models/codeformer.onnx     $BASE/codeformer.onnx            # restoration, CC BY-NC 4.0
+curl -L -o models/codeformer.onnx     $BASE/codeformer.onnx            # restoration, CC BY-NC 4.0 (alt: models/restoration/codeformer.onnx)
 curl -L -o models/inswapper_128.onnx  $BASE/inswapper_128.onnx         # swap model, research-only
 # optional occlusion mask (GPL-3.0):
 curl -L -o models/xseg_1.onnx https://huggingface.co/facefusion/models-3.1.0/resolve/main/xseg_1.onnx
@@ -92,23 +110,29 @@ curl -L -o models/xseg_1.onnx https://huggingface.co/facefusion/models-3.1.0/res
 `reswapper_256.onnx` is optional and has no canonical public host; without it
 the 256px dropdown entry is unavailable. Note that `inswapper_128` and
 `reswapper_256` are InsightFace research models — non-commercial use only.
+Pixel-boost suffixes (`@256` etc.) are only valid for `inswapper_128`; the UI
+rejects them for `reswapper_256`.
 
 ## CodeFormer restoration
 
 Optional face-restoration stage (default off). Requires the ONNX conversion of
-the full CodeFormer graph at `ReactorX/models/codeformer.onnx` (~377 MB, inputs
-`input [1,3,512,512]` and `weight`, output the restored 512px face).
+the full CodeFormer graph at `ReactorX/models/codeformer.onnx` (or
+`models/restoration/codeformer.onnx`, ~377 MB, inputs `input [1,3,512,512]`
+and `weight` float32 scalar, output the restored 512px face).
 
 - Toggle **Enable CodeFormer restoration** in the UI.
 - **CodeFormer fidelity weight** (`w`, 0..1): lower = stronger restoration,
   higher = keeps the swapped face closer to the swap output. 0.8 is a good
-  default; `w` near 1 preserves identity most.
+  default; `w` near 1 preserves identity most. The weight is now fed as
+  `float32` with correct scalar/`[1]` layout detection to avoid ORT type
+  errors on strict builds.
 - The pipeline crops the aligned swapped face, restores it at 512px, pastes it
   back through the same feathered blend used for the plain swap, then applies
   color matching and occlusion recovery as usual.
 - An automatic identity check embeds the swapped and restored aligned faces with
   the recognition model; if restoration drops reference identity noticeably it
-  is skipped for that swap.
+  is skipped for that swap. The threshold is clamped for very low similarities
+  (`max(0, 0.95×, -0.10)`) and compares embeddings at matched scale.
 
 The model is loaded once and kept in memory; it runs on the CPU at roughly 3
 seconds per face.
@@ -123,23 +147,32 @@ This app is intended for images you own or have permission to edit.
 
 - **GPU acceleration.** The venv uses `onnxruntime-gpu` (CUDA 13 wheels are
   pulled in automatically via the `cuda,cudnn` extra). Without a GPU it falls
-  back to CPU transparently.
+  back to CPU transparently. If the CUDA provider is advertised but
+  `libcublas`/`libcublasLt` is missing (seen as
+  `Failed to load ... libonnxruntime_providers_cuda.so`), the pipeline now
+  automatically falls back to `CPUExecutionProvider` and retries model load
+  instead of failing permanently.
 - **Pixel boost.** `inswapper_128@256` / `inswapper_128@512` / `@1024` / `@2048`
   run the 128px model on polyphase tiles of a larger aligned crop (FaceFusion
   technique), yielding 2x/4x/8x/16x sharper swaps with the same identity
-  embedding.
+  embedding. Input size is detected robustly for both `NCHW` and `NHWC` exports.
 - **Face parsing (BiSeNet).** When `models/bisenet_resnet_34.onnx` is present,
   color matching and sharpening use a skin/feature interior mask derived from
   CelebAMask-HQ parsing instead of a geometric ellipse, so hair and background
-  no longer dilute lighting transfer.
+  no longer dilute lighting transfer. The parser handles dynamic dims and avoids
+  double-linear blurring of binary masks (now `NEAREST` with conditional resize).
 - **Occlusion masking (XSeg).** When `models/xseg_1.onnx` is present, objects
   in front of the face (hair strands, glasses, hands) are detected and kept
-  from the target scene. Toggle in the UI.
+  from the target scene. Toggle in the UI. The occluder now handles both
+  `NCHW` and `NHWC` exports and inverts in crop space before warping.
 - **Safer blending.** Landmark-hull face masks follow head roll; masks feather
   with a hard interior (no ghosting); occlusion recovery only touches a thin
-  boundary band and blends partially.
+  boundary band and blends partially. Kernel sizes are clamped to image size to
+  avoid `cv2` errors on huge faces or `2048` boost.
 - **Adaptive detection.** Small faces trigger one retry at higher detector
   resolution for more precise landmarks and alignment.
+- **Gallery UX.** Fixed 420px crop removed; thumbnails use `contain` on a
+  dark letterbox and the preview lightbox is fully zoomable/fullscreenable.
 
 Both ONNX models above are optional; the pipeline logs and degrades gracefully
 without them.
@@ -152,3 +185,5 @@ without them.
 
 Runs unit checks over the engine stages, pixel-boost roundtrips, templates,
 and (when present) the BiSeNet/XSeg model adapters using synthetic images.
+All 40+ checks should report `ok`; missing optional models are reported as
+`[skip]`.

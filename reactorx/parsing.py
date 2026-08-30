@@ -56,7 +56,14 @@ class BisenetParser:
         self.input_name = inp.name
         self.output_name = self.session.get_outputs()[0].name
         shape = inp.shape
-        self.size = int(shape[2]) if isinstance(shape[2], int) and shape[2] > 0 else 512
+        size = 512
+        if len(shape) == 4:
+            for idx in (2, 3):
+                v = shape[idx] if idx < len(shape) else None
+                if isinstance(v, int) and v > 0 and v != 3:
+                    size = v
+                    break
+        self.size = int(size)
 
     def __call__(self, crop: np.ndarray) -> np.ndarray:
         h, w = crop.shape[:2]
@@ -67,7 +74,8 @@ class BisenetParser:
         logits = self.session.run([self.output_name], {self.input_name: blob})[0]
         labels = logits[0].argmax(axis=0).astype(np.int32)
         if labels.shape != (h, w):
-            labels = cv2.resize(labels.astype(np.float32), (w, h),
+            # Labels are discrete class ids 0..18 — use nearest on uint8 to avoid float rounding.
+            labels = cv2.resize(labels.astype(np.uint8), (w, h),
                                 interpolation=cv2.INTER_NEAREST).astype(np.int32)
         return labels
 
@@ -82,7 +90,27 @@ class XSegOccluder:
         self.input_name = inp.name
         self.output_name = self.session.get_outputs()[0].name
         shape = inp.shape
-        self.size = int(shape[1]) if isinstance(shape[1], int) and shape[1] > 0 else 256
+        size = 256
+        if len(shape) == 4:
+            # Handle both NHWC (1,H,W,3) and NCHW (1,3,H,W); skip channel dim (3).
+            candidates = []
+            for idx in range(1, 4):
+                v = shape[idx] if idx < len(shape) else None
+                if isinstance(v, int) and v > 0 and v != 3:
+                    candidates.append(v)
+            if candidates:
+                # Prefer the largest spatial dimension (covers both layouts).
+                size = max(candidates) if len(candidates) > 1 else candidates[0]
+                # For NHWC the spatial dims are [1,2], for NCHW [2,3]; if both present they are equal.
+                if len(shape) == 4 and isinstance(shape[3], int) and shape[3] == 3:
+                    # NHWC: shape[1] is H
+                    if isinstance(shape[1], int) and shape[1] > 0 and shape[1] != 3:
+                        size = shape[1]
+                elif len(shape) == 4 and isinstance(shape[1], int) and shape[1] == 3:
+                    # NCHW: shape[2] is H
+                    if isinstance(shape[2], int) and shape[2] > 0 and shape[2] != 3:
+                        size = shape[2]
+        self.size = int(size)
 
     def detect(self, crop: np.ndarray) -> np.ndarray:
         img = cv2.resize(crop, (self.size, self.size), interpolation=cv2.INTER_LINEAR)

@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -16,16 +15,16 @@ logger = logging.getLogger("reactorx.engine")
 @dataclass
 class FaceRecord:
     face: object
-    bbox: Tuple[int, int, int, int]
+    bbox: tuple[int, int, int, int]
     landmarks: np.ndarray
-    embedding: Optional[np.ndarray]
+    embedding: np.ndarray | None
     score: float
     quality: float = 0.0
-    masks: Dict[str, np.ndarray] = field(default_factory=dict)
+    masks: dict[str, np.ndarray] = field(default_factory=dict)
     # 0 = female, 1 = male (from insightface's genderage model); None when the
     # analysis pack does not provide it. Age is captured for future features.
-    gender: Optional[int] = None
-    age: Optional[int] = None
+    gender: int | None = None
+    age: int | None = None
 
 
 MASK_NAMES = ("skin", "eyes", "eyebrows", "nose", "lips", "teeth",
@@ -95,7 +94,13 @@ def soften_mask(mask: np.ndarray, sigma: float) -> np.ndarray:
     falloff is confined to the true boundary instead of bleeding outward."""
     if sigma <= 0:
         return np.clip(mask, 0, 1)
+    h, w = mask.shape[:2]
     k = int(sigma * 4) | 1
+    # Clamp kernel to image size to avoid cv2.error on huge sigma / small masks.
+    max_k = (min(h, w) // 2) | 1
+    if max_k >= 3 and k > max_k:
+        k = max_k if max_k % 2 == 1 else max_k - 1
+        sigma = max(1.0, k / 4.0)
     blurred = cv2.GaussianBlur(np.clip(mask, 0, 1).astype(np.float32), (k, k), sigma)
     return np.clip((np.clip(blurred, 0.5, 1.0) - 0.5) * 2.0, 0, 1)
 
@@ -143,7 +148,7 @@ def recover_occlusions(target, result, face_mask, sensitivity=.6):
     edges_r = np.abs(gx_r) + np.abs(gy_r)
     lost = (edges_t > 60) & (edges_r < edges_t * .6)
     thr = max(20.0, float(np.percentile(diff[roi], 85)))
-    candidates = ((lost & (diff > thr) & roi)).astype(np.uint8)
+    candidates = (lost & (diff > thr) & roi).astype(np.uint8)
     face_bin = (face_mask > .5).astype(np.uint8)
     k = max(3, int(min(h, w) * .008))
     kernel = np.ones((k, k), np.uint8)
@@ -177,6 +182,7 @@ def recover_occlusions(target, result, face_mask, sensitivity=.6):
 def parse_face(image, record: FaceRecord, parser=None):
     x1, y1, x2, y2 = record.bbox
     crop = image[y1:y2, x1:x2]
+    bw, bh = max(1, x2 - x1), max(1, y2 - y1)
     masks = None
     if parser is not None:
         try:
@@ -191,7 +197,9 @@ def parse_face(image, record: FaceRecord, parser=None):
                 masks[name] = np.isin(labels, values).astype(np.float32)
             masks["background"] = (labels == 0).astype(np.float32)
             for name in MASK_NAMES:
-                masks[name] = cv2.resize(masks[name], (x2 - x1, y2 - y1), interpolation=cv2.INTER_LINEAR)
+                # Parser already resizes labels to (bh,bw); only resize if shape mismatches.
+                if masks[name].shape[1] != bw or masks[name].shape[0] != bh:
+                    masks[name] = cv2.resize(masks[name], (bw, bh), interpolation=cv2.INTER_NEAREST)
         except Exception as exc:
             logger.warning("face parsing failed (%s); using geometric masks", exc)
             masks = None
@@ -199,7 +207,7 @@ def parse_face(image, record: FaceRecord, parser=None):
     return record
 
 
-def weighted_identity(records: List[FaceRecord]) -> np.ndarray:
+def weighted_identity(records: list[FaceRecord]) -> np.ndarray:
     usable = [record for record in records if record.embedding is not None and record.quality > 0]
     if not usable:
         raise RuntimeError("No usable reference face embeddings")
@@ -294,7 +302,9 @@ def composite_region_mask(record: FaceRecord, shape, names, dilate_frac=.02,
     canvas = np.zeros((h, w), np.float32)
     canvas[y1:y2, x1:x2] = union
     k = max(3, int(min(bw, bh) * dilate_frac)) | 1
-    region = cv2.dilate(canvas[y1:y2, x1:x2], np.ones((k, k), np.uint8))
+    # dilate expects uint8; convert slice, dilate, then back to float.
+    roi_u8 = (np.clip(canvas[y1:y2, x1:x2], 0, 1) * 255).astype(np.uint8)
+    region = cv2.dilate(roi_u8, np.ones((k, k), np.uint8)).astype(np.float32) / 255.0
     canvas[y1:y2, x1:x2] = region
     sigma = max(2.0, min(bw, bh) * feather_frac)
     return soften_mask(canvas, sigma)
