@@ -222,41 +222,56 @@ try:
 except: pass
 "
 
-# --- 4. Models (auto-download all needed locally) ---
-info "Checking & downloading models in $ROOT/models (local, ~1.6GB once)..."
+# --- 4. Models — checker + Setup Guide (no auto-download, licensing) ---
+info "Checking models in $ROOT/models ..."
 if [[ -f "$ROOT/scripts/download_models.py" ]]; then
-  # First show status, then actually fetch missing (handles inswapper_128 + bisenet + xseg + codeformer)
   $PYBIN -u "$ROOT/scripts/download_models.py" --check || true
-  info "Fetching missing models (this may take 5-15 min first time, then cached)..."
-  echo "  (downloading to $ROOT/models — each file shows % and MB; logs also at /tmp/reactorx_models.log)"
-  # Use -u (unbuffered) and stdbuf -oL for line-buffered tee so user sees progress live even when piped
-  set +e
-  if command -v stdbuf >/dev/null 2>&1; then
-    $PYBIN -u "$ROOT/scripts/download_models.py" 2>&1 | stdbuf -oL tee /tmp/reactorx_models.log
-    RET=${PIPESTATUS[0]}
+  RET=$?
+  if [[ $RET -ne 0 ]]; then
+    echo ""
+    echo -e "${YELLOW}  ┌─────────────────────────────────────────────────────────┐${NC}"
+    echo -e "${YELLOW}  │  Model Setup Guide — some models missing              │${NC}"
+    echo -e "${YELLOW}  └─────────────────────────────────────────────────────────┘${NC}"
+    echo ""
+    echo "  ReactorX does not auto-download models (licensing)."
+    echo "  Follow the Model Setup Guide below, then re-run this installer."
+    echo ""
+    echo "  Quick setup (run from $ROOT):"
+    echo ""
+    echo "    BASE=https://huggingface.co/facefusion/models-3.0.0/resolve/main"
+    echo "    mkdir -p models"
+    echo "    curl -L -o models/bisenet_resnet_34.onnx \$BASE/bisenet_resnet_34.onnx   # face parsing, MIT (~90 MB)"
+    echo "    curl -L -o models/codeformer.onnx     \$BASE/codeformer.onnx            # restoration, CC BY-NC 4.0 (~377 MB)"
+    echo "    curl -L -o models/inswapper_128.onnx  \$BASE/inswapper_128.onnx         # swap model, research-only (~529 MB)"
+    echo "    curl -L -o models/xseg_1.onnx https://huggingface.co/facefusion/models-3.1.0/resolve/main/xseg_1.onnx  # occlusion, GPL-3.0 (~68 MB)"
+    echo ""
+    echo "  buffalo_l pack (5 files) auto-downloads on first swap via InsightFace — no manual step needed,"
+    echo "  or get it from: https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip"
+    echo ""
+    echo "  After installing, verify:"
+    echo "    $PYBIN scripts/download_models.py --check"
+    echo ""
+    echo "  Once you see:"
+    echo "    [✓] buffalo_l"
+    echo "    [✓] inswapper_128"
+    echo "    [✓] BiSeNet"
+    echo "    [✓] XSeg"
+    echo "    [✓] CodeFormer"
+    echo "  then run:  ./run.sh  or  python launcher.py  ->  [Launch ReactorX]"
+    echo ""
+    # Don't fail hard — let user read guide, but warn that swaps will need inswapper
+    if [[ ! -f "$ROOT/models/inswapper_128.onnx" ]]; then
+      warn "CRITICAL: inswapper_128.onnx missing — swaps will fail until you install it (see guide above)."
+    fi
   else
-    $PYBIN -u "$ROOT/scripts/download_models.py" 2>&1 | tee /tmp/reactorx_models.log
-    RET=${PIPESTATUS[0]}
-  fi
-  set -e
-  if [[ $RET -eq 0 ]]; then
-    ok "Models ready (or already present)"
-  else
-    warn "Some model downloads failed (exit $RET) — see /tmp/reactorx_models.log"
-    warn "  buffalo_l auto-downloads on first swap; for manual: see README 'Getting the models'"
-    cat /tmp/reactorx_models.log | tail -30
+    ok "All required models present — ready to launch!"
   fi
 else
   for f in "insightface/models/buffalo_l/det_10g.onnx" "inswapper_128.onnx"; do
     if [[ -f "$ROOT/models/$f" ]]; then ok "found models/$f"
-    else warn "missing models/$f (will auto-download or see README)"
+    else warn "missing models/$f — see Model Setup Guide in README"
     fi
   done
-fi
-# Verify critical swap model exists; if not, warn clearly
-if [[ ! -f "$ROOT/models/inswapper_128.onnx" ]] && [[ ! -f "$ROOT/models/inswapper_128.onnx" ]]; then
-  warn "CRITICAL: inswapper_128.onnx still missing — swaps will fail with 'Place inswapper_128.onnx in ...'"
-  warn "  Download: curl -L -o $ROOT/models/inswapper_128.onnx https://huggingface.co/facefusion/models-3.0.0/resolve/main/inswapper_128.onnx"
 fi
 
 # --- 5. Self-check ---

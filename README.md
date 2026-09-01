@@ -51,12 +51,29 @@ Python packages locally. Use `--host 0.0.0.0` to expose it on your LAN.
 ### What the installer does (all locally)
 1. **Fetches project files** if not present (git clone or ZIP)
 2. Checks Python 3.10+ exists (guides install if missing)
-3. Creates isolated `.venv`, installs `requirements.txt` (idempotent)
-4. Verifies models in `models/` (see `scripts/download_models.py --check`); `buffalo_l` auto-downloads, others via helper/ZIP
-5. Runs `scripts/selfcheck.py` and launches Gradio on loopback (offline-capable after install — no internet needed afterwards)
+3. Creates isolated `.venv`, installs `requirements.txt` (idempotent, CPU/GPU auto-detected)
+4. **Model checker** — runs `scripts/download_models.py --check` (no auto-download, licensing) → if missing, shows **Model Setup Guide**
+5. Runs `scripts/selfcheck.py` and launches Gradio on loopback (offline-capable after models installed)
+
+### First launch flow (licensing-safe)
+```
+First launch
+    ↓
+Model checker (scripts/download_models.py --check)
+    ↓
+Missing model?
+    ↓
+"Follow Model Setup Guide"  →  curl commands for each model
+    ↓
+User installs → re-check
+    ↓
+[✓] buffalo_l   [✓] inswapper_128   [✓] BiSeNet   [✓] XSeg   [✓] CodeFormer
+                          ↓
+                [Launch ReactorX]  (Run identity swap)
+```
 
 ### How distribution works
-You host only a light download page/redirect. The user gets the **full** `ReactorX/` folder (app.py, reactorx/, requirements.txt, scripts/, models/ placeholder, outputs/) via one of the three options above. Everything after that runs 100% on their device — no code or images ever go to your server.
+You host only a light download page/redirect. The user gets the **full** `ReactorX/` folder (app.py, reactorx/, requirements.txt, scripts/, models/ placeholder, outputs/) via one of the three options above. Everything after that runs 100% on their device — no code or images ever go to your server. The app's top **Model Setup Guide** accordion shows live checkmarks and disables *Run identity swap* until required models are present.
 
 ## Swapping and saved outputs
 
@@ -129,20 +146,33 @@ adapter for the 128px model and a dedicated two-input ONNX adapter for the
 an ArcFace recognition model.
 Set `REACTORX_MODELS=/another/path` to use another model directory.
 
-### Getting the models
+### Getting the models — Model Setup Guide
 
 Model weights are **not included in this repository** (size and license
-restrictions). The `buffalo_l` analysis pack downloads automatically into
-`models/insightface/` on first launch. The remaining files can be fetched from
-their upstream hosts:
+restrictions) and **are not auto-downloaded** (licensing). The `buffalo_l` analysis pack auto-downloads on first swap via InsightFace; the rest require your manual step. The app shows a live checker:
+
+```
+[✓/✗] buffalo_l      — Face analysis (5 files, auto)
+[✓/✗] inswapper_128  — Main swap (required, ~529 MB)
+[✓/✗] BiSeNet        — Face parsing (~90 MB)
+[✓/✗] XSeg           — Occlusion (~68 MB)
+[✓/✗] CodeFormer     — Restoration (~377 MB)
+          ↓ all ✓ → [Launch ReactorX]
+```
+
+**Install missing models** (from your `ReactorX/` folder):
 
 ```bash
 BASE=https://huggingface.co/facefusion/models-3.0.0/resolve/main
+mkdir -p models
 curl -L -o models/bisenet_resnet_34.onnx $BASE/bisenet_resnet_34.onnx   # face parsing, MIT
 curl -L -o models/codeformer.onnx     $BASE/codeformer.onnx            # restoration, CC BY-NC 4.0 (alt: models/restoration/codeformer.onnx)
 curl -L -o models/inswapper_128.onnx  $BASE/inswapper_128.onnx         # swap model, research-only
 # optional occlusion mask (GPL-3.0):
 curl -L -o models/xseg_1.onnx https://huggingface.co/facefusion/models-3.1.0/resolve/main/xseg_1.onnx
+# buffalo_l manual alt: https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip -> models/insightface/models/buffalo_l/
+python scripts/download_models.py --check   # verify — should show all ✓
+# If you accept licenses and want auto-fetch: python scripts/download_models.py --download
 ```
 
 `reswapper_256.onnx` is optional and has no canonical public host; without it
@@ -218,10 +248,10 @@ without them.
 ## Self-check & model helper
 
 ```bash
-.venv/bin/python scripts/selfcheck.py          # 40+ checks, synthetic data only
-.venv/bin/python scripts/download_models.py --check   # verify models
-.venv/bin/python scripts/download_models.py           # download missing (BiSeNet/XSeg/CodeFormer)
-python launcher.py --skip-check               # skip checks for faster launch
+.venv/bin/python scripts/selfcheck.py                # 40+ checks, synthetic data only
+.venv/bin/python scripts/download_models.py --check   # checker → guide (no download, default)
+.venv/bin/python scripts/download_models.py --download  # actually fetch (only if you accept licenses)
+python launcher.py --skip-check                     # skip checks for faster launch
 ```
 
 Runs unit checks over the engine stages, pixel-boost roundtrips, templates,

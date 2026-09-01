@@ -73,6 +73,77 @@ SWAPPER_CHOICES = [
     "reswapper_256.onnx",
 ]
 
+# --- Model checker (licensing: no auto-download) ---
+MODEL_SPECS = [
+    ("buffalo_l",        "models/insightface/models/buffalo_l", ["det_10g.onnx","2d106det.onnx","1k3d68.onnx","genderage.onnx","w600k_r50.onnx"], "Face analysis (detection+landmarks+identity)", "Auto-downloads on first swap via InsightFace"),
+    ("inswapper_128",    "models/inswapper_128.onnx",           None, "Main swap model 128px (required)", "Research-only"),
+    ("BiSeNet",          "models/bisenet_resnet_34.onnx",       None, "Face parsing (~90 MB)", "MIT"),
+    ("CodeFormer",       "models/codeformer.onnx",              None, "Restoration (~377 MB, optional)", "CC BY-NC 4.0"),
+    ("XSeg",             "models/xseg_1.onnx",                  None, "Occlusion mask (~68 MB, optional)", "GPL-3.0"),
+]
+
+def _check_models():
+    """Return (html, can_launch, status_dict)."""
+    rows = []
+    all_ok = True
+    required_ok = True
+    for name, rel, files, desc, lic in MODEL_SPECS:
+        # For directory specs, check all files inside
+        if files:
+            if name == "buffalo_l":
+                base = MODELS / "insightface" / "models" / "buffalo_l"
+            else:
+                # strip leading models/ if present
+                clean = rel.removeprefix("models/") if rel.startswith("models/") else rel
+                base = MODELS / clean
+            missing = [f for f in files if not (base / f).exists()]
+            ok = len(missing)==0
+            # buffalo_l is required, but auto-downloads — treat as ok-ish for launch if missing (will auto)
+            # For checker we show missing but allow launch if only buffalo_l missing (it will auto)
+            detail = f"{len(files)-len(missing)}/{len(files)} files" if not ok else f"{len(files)} files"
+            if not ok: all_ok=False
+            # don't block launch solely on buffalo_l (auto)
+            # required blocking: inswapper must exist
+        else:
+            # file spec: respect MODELS (supports REACTORX_MODELS override)
+            clean = rel.removeprefix("models/") if rel.startswith("models/") else rel
+            p = MODELS / clean
+            # handle alt path for codeformer restoration/
+            alt = MODELS / "restoration" / "codeformer.onnx" if name=="CodeFormer" else None
+            ok = p.exists() or (alt and alt.exists())
+            detail = desc
+            if not ok:
+                if name in ("inswapper_128",): # required
+                    required_ok=False
+                    all_ok=False
+                else:
+                    # optional: don't block launch, but mark not all_ok
+                    all_ok=False
+        icon = "✓" if ok else "✗"
+        color = "#b9ff66" if ok else "#ff6b6b"
+        rows.append(f'<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #242824"><span><span style="color:{color};font-weight:700">{icon}</span> <b>{name}</b> <span style="color:#9aa39a">— {detail}</span></span><span style="color:#9aa39a;font-size:0.85em">{lic}</span></div>')
+    can_launch = required_ok # only inswapper truly required; buffalo auto
+    # Build guide if missing
+    guide = ""
+    if not all_ok:
+        guide = '''
+<div style="background:#1a1d1a;border:1px solid #2a332a;border-left:3px solid #b9ff66;padding:12px;border-radius:8px;margin-top:12px">
+<b style="color:#b9ff66">Model Setup Guide</b> — ReactorX does not auto-download models (licensing). Run from your ReactorX folder:
+<pre style="background:#0f1110;padding:10px;border-radius:6px;overflow:auto;margin:8px 0;color:#cfe8cf;font-size:0.85em">BASE=https://huggingface.co/facefusion/models-3.0.0/resolve/main
+mkdir -p models
+curl -L -o models/bisenet_resnet_34.onnx $BASE/bisenet_resnet_34.onnx   # BiSeNet ~90MB MIT
+curl -L -o models/codeformer.onnx     $BASE/codeformer.onnx            # CodeFormer ~377MB CC BY-NC
+curl -L -o models/inswapper_128.onnx  $BASE/inswapper_128.onnx         # inswapper ~529MB research-only
+curl -L -o models/xseg_1.onnx https://huggingface.co/facefusion/models-3.1.0/resolve/main/xseg_1.onnx  # XSeg ~68MB GPL
+# buffalo_l auto-downloads on first swap; or: https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip
+python scripts/download_models.py --check   # verify</pre>
+<div style="color:#9aa39a;font-size:0.9em">After installing, click <b>🔄 Re-check Models</b>. When you see all <span style="color:#b9ff66">✓</span>, press <b>Launch ReactorX</b> (Run identity swap).</div>
+</div>'''
+    else:
+        guide = '<div style="background:#0f1a0f;border:1px solid #2a5a2a;padding:10px;border-radius:8px;margin-top:12px;color:#b9ff66">✓ All models ready — you can now <b>Launch ReactorX</b> (Run identity swap).</div>'
+    html = '<div style="font-family:Inter,system-ui">' + ''.join(rows) + guide + '</div>'
+    return html, can_launch
+
 
 def get_pipeline(min_face_size, verify_threshold, color_strength, codeformer_enabled,
                  codeformer_weight, sharpen_strength, occluder_enabled):
@@ -181,6 +252,13 @@ def build_ui():
         css=APP_CSS,
     ) as app:
         gr.Markdown("# ReactorX Swap Engine v1\nIdentity transfer with target geometry and scene preservation.", elem_classes="rx-title")
+        # --- Model Setup Guide (licensing: checker -> guide -> launch) ---
+        init_html, init_can = _check_models()
+        with gr.Accordion("Model Setup Guide — checker → guide → Launch", open=not init_can) as model_acc:
+            model_html = gr.HTML(init_html)
+            with gr.Row():
+                recheck_btn = gr.Button("🔄 Re-check Models", variant="secondary", size="sm")
+                launch_info = gr.Markdown("✅ Ready" if init_can else "❌ Missing models — follow guide above", elem_classes="rx-status")
         with gr.Row():
             with gr.Column(scale=5):
                 targets = gr.Gallery(
@@ -236,7 +314,7 @@ def build_ui():
                 codeformer_weight = gr.Slider(0, 1, value=.8, step=.05, label="CodeFormer fidelity weight", info="Lower = more restoration, higher = keeps the swapped face structure closer to the swap output.")
                 sharpen_strength = gr.Slider(0, 1, value=.5, step=.05, label="Sharpen strength", info="Single size-aware unsharp pass on the swapped face interior. Increases clarity without changing the swap model.")
             occluder_enabled = gr.Checkbox(value=True, label="Occlusion mask (XSeg)", info="Keeps hair strands, glasses and other objects in front of the face. Requires models/xseg_1.onnx (ignored if absent). Face parsing uses models/bisenet_resnet_34.onnx when present for tighter masks.")
-            swap = gr.Button("Run identity swap", variant="primary")
+            swap = gr.Button("Run identity swap", variant="primary", interactive=init_can)
             output = gr.Gallery(
                 label="Swapped images — click any image to view full size / zoom",
                 columns=3,
@@ -249,6 +327,12 @@ def build_ui():
                 elem_classes="rx-gallery",
             )
             status = gr.Textbox(label="Pipeline report", lines=4, elem_classes="rx-status")
+
+            def _on_recheck():
+                html, can = _check_models()
+                return html, ("✅ All models ready — press **Run identity swap** to Launch ReactorX" if can else "❌ Still missing — follow Model Setup Guide above"), gr.update(interactive=can)
+
+            recheck_btn.click(_on_recheck, outputs=[model_html, launch_info, swap])
 
             def _toggle_target_index(mode):
                 return gr.update(visible=mode.startswith("Manual"))

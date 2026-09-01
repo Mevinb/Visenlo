@@ -154,18 +154,29 @@ except: pass
 def model_check():
     helper = ROOT / "scripts" / "download_models.py"
     if helper.exists():
-        subprocess.call([str(VENV_PY), str(helper), "--check"])
-        # Also auto-fetch missing (so new user doesn't hit FileNotFoundError for inswapper)
-        info("Fetching missing models locally (if any)...")
-        subprocess.call([str(VENV_PY), str(helper)])
-        # verify critical
-        if not (ROOT / "models" / "inswapper_128.onnx").exists():
-            warn("CRITICAL: inswapper_128.onnx still missing — run: python scripts/download_models.py")
+        ret = subprocess.call([str(VENV_PY), str(helper), "--check"])
+        if ret != 0:
+            warn("Some models missing — follow Model Setup Guide (no auto-download, licensing)")
+            print("  Guide:")
+            print("    BASE=https://huggingface.co/facefusion/models-3.0.0/resolve/main")
+            print("    curl -L -o models/inswapper_128.onnx  $BASE/inswapper_128.onnx")
+            print("    curl -L -o models/bisenet_resnet_34.onnx $BASE/bisenet_resnet_34.onnx")
+            print("    curl -L -o models/codeformer.onnx $BASE/codeformer.onnx")
+            print("    curl -L -o models/xseg_1.onnx https://huggingface.co/facefusion/models-3.1.0/resolve/main/xseg_1.onnx")
+            print("  Then re-run: python scripts/download_models.py --check")
+            print("  Or auto (if you accept licenses): python scripts/download_models.py --download")
+            print("  buffalo_l auto-downloads on first swap")
+            # verify critical
+            if not (ROOT / "models" / "inswapper_128.onnx").exists():
+                warn("CRITICAL: inswapper_128.onnx still missing — swaps will fail until installed")
+            print("\n  Once you see: [✓] buffalo_l [✓] inswapper_128 [✓] BiSeNet [✓] XSeg [✓] CodeFormer -> [Launch ReactorX]")
+        else:
+            ok("All models ready — [Launch ReactorX]")
     else:
         for rel in ["models/inswapper_128.onnx", "models/insightface/models/buffalo_l/det_10g.onnx"]:
             p = ROOT / rel
             if p.exists(): ok(f"found {rel}")
-            else: warn(f"missing {rel} (see README)")
+            else: warn(f"missing {rel} (see README Model Setup Guide)")
 
 
 def selfcheck():

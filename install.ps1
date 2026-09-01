@@ -157,19 +157,46 @@ try: import cv2; print(f'  OpenCV: {cv2.__version__}')
 except: pass
 "@
 
-# --- 5. Models (auto-download all locally) ---
-Write-Info "Checking & downloading models (local, first time 5-15 min)..."
+# --- 5. Models — checker + Setup Guide (no auto-download, licensing) ---
+Write-Info "Checking models..."
 if (Test-Path "$Root\scripts\download_models.py") {
   & $VenvPython "$Root\scripts\download_models.py" --check
-  Write-Info "Fetching missing models..."
-  & $VenvPython "$Root\scripts\download_models.py"
-  if (-not (Test-Path "$Root\models\inswapper_128.onnx")) {
-    Write-Warn "CRITICAL: inswapper_128.onnx still missing — run: python scripts/download_models.py"
-    Write-Warn "  Manual: curl -L -o $Root\models\inswapper_128.onnx https://huggingface.co/facefusion/models-3.0.0/resolve/main/inswapper_128.onnx"
-  } else { Write-Ok "Models ready" }
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host ""
+    Write-Host "  ┌─────────────────────────────────────────────────────────┐" -ForegroundColor Yellow
+    Write-Host "  │  Model Setup Guide — some models missing              │" -ForegroundColor Yellow
+    Write-Host "  └─────────────────────────────────────────────────────────┘" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  ReactorX does not auto-download models (licensing)."
+    Write-Host "  Follow the Model Setup Guide below, then re-run this installer."
+    Write-Host ""
+    Write-Host "  Quick setup (run from $Root):"
+    Write-Host ""
+    Write-Host "    `$BASE=https://huggingface.co/facefusion/models-3.0.0/resolve/main"
+    Write-Host "    mkdir models"
+    Write-Host "    curl -L -o models/bisenet_resnet_34.onnx `$BASE/bisenet_resnet_34.onnx   # face parsing, MIT (~90 MB)"
+    Write-Host "    curl -L -o models/codeformer.onnx     `$BASE/codeformer.onnx            # restoration, CC BY-NC (~377 MB)"
+    Write-Host "    curl -L -o models/inswapper_128.onnx  `$BASE/inswapper_128.onnx         # swap model, research-only (~529 MB)"
+    Write-Host "    curl -L -o models/xseg_1.onnx https://huggingface.co/facefusion/models-3.1.0/resolve/main/xseg_1.onnx  # occlusion, GPL (~68 MB)"
+    Write-Host ""
+    Write-Host "  buffalo_l pack auto-downloads on first swap via InsightFace"
+    Write-Host "  After installing, verify:  python scripts/download_models.py --check"
+    Write-Host ""
+    Write-Host "  Once you see:"
+    Write-Host "    [✓] buffalo_l"
+    Write-Host "    [✓] inswapper_128"
+    Write-Host "    [✓] BiSeNet"
+    Write-Host "    [✓] XSeg"
+    Write-Host "    [✓] CodeFormer"
+    Write-Host "  then run:  .\run.bat  or  python launcher.py  ->  [Launch ReactorX]"
+    Write-Host ""
+    if (-not (Test-Path "$Root\models\inswapper_128.onnx")) {
+      Write-Warn "CRITICAL: inswapper_128.onnx missing — swaps will fail until you install it (see guide above)."
+    }
+  } else { Write-Ok "All required models present — ready to launch!" }
 } else {
   foreach ($f in @("models\inswapper_128.onnx","models\insightface\models\buffalo_l\det_10g.onnx")) {
-    if (Test-Path "$Root\$f") { Write-Ok "found $f" } else { Write-Warn "missing $f (see README)" }
+    if (Test-Path "$Root\$f") { Write-Ok "found $f" } else { Write-Warn "missing $f (see Model Setup Guide in README)" }
   }
 }
 

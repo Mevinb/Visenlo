@@ -122,14 +122,39 @@ def download(url: str, dest: Path):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="ReactorX model helper (local)")
-    ap.add_argument("--check", action="store_true", help="only check, don't download")
+    ap = argparse.ArgumentParser(description="ReactorX model helper (local) — licensing: manual setup by default")
+    ap.add_argument("--check", action="store_true", help="only check, don't download (default)")
+    ap.add_argument("--download", action="store_true", help="actually download missing models (ensure you comply with each model's license)")
     ap.add_argument("--all", action="store_true", help="check all including optional")
     args = ap.parse_args()
 
-    if args.check:
-        sys.exit(check())
+    # Default / --check: show checker + guide, no network
+    if args.check or not args.download:
+        # If user ran without flags, show check + guide (no auto-download)
+        if not args.download:
+            print("ReactorX Model Setup Guide (no auto-download — licensing)")
+            print("="*60)
+        ret = check()
+        if ret != 0:
+            print("\nModel Setup Guide — run these from your ReactorX folder:")
+            print("  BASE=https://huggingface.co/facefusion/models-3.0.0/resolve/main")
+            print("  mkdir -p models")
+            for rel, url, desc in FILES:
+                dest = MODELS / rel
+                alt = MODELS / "restoration" / "codeformer.onnx" if rel == "codeformer.onnx" else None
+                if not (dest.is_file() or (alt and alt.is_file())):
+                    print(f"  curl -L -o {dest} {url}   # {desc}")
+            print("  # optional XSeg: curl -L -o models/xseg_1.onnx https://huggingface.co/facefusion/models-3.1.0/resolve/main/xseg_1.onnx")
+            print("  # buffalo_l auto-downloads on first swap; or: https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip")
+            print("\nAfter installing, re-run: python scripts/download_models.py --check")
+            print("Once you see:")
+            print("  [✓] buffalo_l  [✓] inswapper_128  [✓] BiSeNet  [✓] XSeg  [✓] CodeFormer")
+            print("  -> [Launch ReactorX]")
+            print("\nTo auto-download despite licensing, run: python scripts/download_models.py --download")
+        sys.exit(ret)
 
+    # --download: actually fetch (user explicitly opted in)
+    print("Downloading missing models (you confirmed licensing compliance)...")
     print(f"Models dir: {MODELS}")
     MODELS.mkdir(parents=True, exist_ok=True)
     any_missing = False
