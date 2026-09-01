@@ -66,13 +66,59 @@ def ensure_venv():
         sys.exit(1)
 
 
+def has_nvidia_gpu() -> bool:
+    import shutil, pathlib
+    # nvidia-smi
+    if shutil.which("nvidia-smi"):
+        try:
+            subprocess.check_call(["nvidia-smi"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        except: pass
+    # Windows nvidia-smi location
+    if IS_WIN and pathlib.Path("C:/Windows/System32/nvidia-smi.exe").exists():
+        return True
+    # lspci
+    if shutil.which("lspci"):
+        try:
+            out = subprocess.check_output(["lspci"], text=True, stderr=subprocess.DEVNULL)
+            if "nvidia" in out.lower(): return True
+        except: pass
+    if pathlib.Path("/proc/driver/nvidia/version").exists():
+        return True
+    return False
+
 def pip_install():
     info("Installing dependencies (2-5 min first time) ...")
     # remove conflicting wheels
-    subprocess.call([str(VENV_PY), "-m", "pip", "uninstall", "-y", "onnxruntime", "opencv-python"],
+    subprocess.call([str(VENV_PY), "-m", "pip", "uninstall", "-y", "onnxruntime", "onnxruntime-gpu", "opencv-python"],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     subprocess.check_call([str(VENV_PY), "-m", "pip", "install", "--upgrade", "pip", "-q"])
-    subprocess.check_call([str(VENV_PY), "-m", "pip", "install", "-q", "-r", str(REQ)])
+    gpu = has_nvidia_gpu()
+    if gpu:
+        info("  GPU detected — installing onnxruntime-gpu (will fallback to CPU if CUDA libs missing)...")
+        try:
+            subprocess.check_call([str(VENV_PY), "-m", "pip", "install", "-q", "-r", str(REQ)])
+        except subprocess.CalledProcessError:
+            warn("GPU install failed, falling back to CPU")
+            # rewrite req to cpu
+            txt = REQ.read_text().replace("onnxruntime-gpu", "onnxruntime")
+            tmp = ROOT / ".tmp_req_cpu.txt"
+            tmp.write_text(txt)
+            subprocess.check_call([str(VENV_PY), "-m", "pip", "install", "-q", "-r", str(tmp)])
+            tmp.unlink(missing_ok=True)
+        # verify CUDA actually usable
+        ret = subprocess.call([str(VENV_PY), "-c", "import onnxruntime as ort; exit(0 if 'CUDAExecutionProvider' in ort.get_available_providers() else 1)"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if ret != 0:
+            warn("CUDA provider not usable (missing libcublas) — pipeline will use CPU (still works)")
+        else:
+            ok("CUDA provider available")
+    else:
+        info("  No GPU detected — installing CPU build (onnxruntime)...")
+        txt = REQ.read_text().replace("onnxruntime-gpu", "onnxruntime")
+        tmp = ROOT / ".tmp_req_cpu.txt"
+        tmp.write_text(txt)
+        subprocess.check_call([str(VENV_PY), "-m", "pip", "install", "-q", "-r", str(tmp)])
+        tmp.unlink(missing_ok=True)
     ok("Dependencies installed")
 
 
@@ -109,6 +155,12 @@ def model_check():
     helper = ROOT / "scripts" / "download_models.py"
     if helper.exists():
         subprocess.call([str(VENV_PY), str(helper), "--check"])
+        # Also auto-fetch missing (so new user doesn't hit FileNotFoundError for inswapper)
+        info("Fetching missing models locally (if any)...")
+        subprocess.call([str(VENV_PY), str(helper)])
+        # verify critical
+        if not (ROOT / "models" / "inswapper_128.onnx").exists():
+            warn("CRITICAL: inswapper_128.onnx still missing — run: python scripts/download_models.py")
     else:
         for rel in ["models/inswapper_128.onnx", "models/insightface/models/buffalo_l/det_10g.onnx"]:
             p = ROOT / rel

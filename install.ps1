@@ -99,33 +99,74 @@ if (-not (Test-Path $VenvPython)) {
   exit 1
 }
 
-# --- 3. Install deps ---
-Write-Info "Installing dependencies (2-5 minutes first time)..."
+# --- 3. Device-aware install ---
+function Test-NvidiaGpu {
+  if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) {
+    try { & nvidia-smi 2>$null | Out-Null; if ($LASTEXITCODE -eq 0) { return $true } } catch {}
+  }
+  if (Test-Path "C:\Windows\System32\nvidia-smi.exe") { return $true }
+  try {
+    $gpu = (Get-WmiObject Win32_VideoController -ErrorAction SilentlyContinue | Where-Object { $_.Name -match "NVIDIA" })
+    if ($gpu) { return $true }
+  } catch {}
+  return $false
+}
+$HasGpu = Test-NvidiaGpu
+if ($HasGpu) { Write-Info "GPU: NVIDIA detected — will try onnxruntime-gpu (falls back to CPU if needed)" }
+else { Write-Info "GPU: none detected — using CPU build" }
+
+Write-Info "Installing dependencies (2-5 minutes first time) — mode: $(if($HasGpu){'GPU'}else{'CPU'})..."
 & $VenvPython -m pip install --upgrade pip -q
-& $VenvPython -m pip uninstall -y onnxruntime opencv-python 2>$null | Out-Null
-& $VenvPython -m pip install -r "$Root\requirements.txt"
-if ($LASTEXITCODE -ne 0) { Write-Fail "pip install failed"; exit 1 }
+& $VenvPython -m pip uninstall -y onnxruntime onnxruntime-gpu opencv-python 2>$null | Out-Null
+
+if ($HasGpu) {
+  & $VenvPython -m pip install -r "$Root\requirements.txt"
+  if ($LASTEXITCODE -ne 0) {
+    Write-Warn "GPU install failed, falling back to CPU"
+    (Get-Content "$Root\requirements.txt") -replace "onnxruntime-gpu","onnxruntime" | Set-Content "$env:TEMP\req_cpu.txt"
+    & $VenvPython -m pip install -r "$env:TEMP\req_cpu.txt"
+  }
+  # Verify CUDA usable
+  & $VenvPython -c "import onnxruntime as ort; exit(0 if 'CUDAExecutionProvider' in ort.get_available_providers() else 1)" 2>$null
+  if ($LASTEXITCODE -ne 0) { Write-Warn "CUDA provider not usable — pipeline will use CPU (still works)" } else { Write-Ok "CUDA provider available" }
+} else {
+  (Get-Content "$Root\requirements.txt") -replace "onnxruntime-gpu","onnxruntime" | Set-Content "$env:TEMP\req_cpu.txt"
+  & $VenvPython -m pip install -r "$env:TEMP\req_cpu.txt"
+  if ($LASTEXITCODE -ne 0) { Write-Fail "pip install failed"; exit 1 }
+}
 Write-Ok "Dependencies installed"
 
 # --- 4. System check ---
 Write-Info "System check:"
 & $VenvPython -c @"
-import platform, sys
+import platform, sys, shutil, os
 print(f'  OS: {platform.system()} {platform.release()}')
 print(f'  Python: {sys.version.split()[0]}')
 try:
+    import psutil; print(f'  RAM: {round(psutil.virtual_memory().total/1024**3,1)} GB')
+except:
+    try: print(f'  RAM: {round(os.sysconf(\"SC_PAGE_SIZE\")*os.sysconf(\"SC_PHYS_PAGES\")/1024**3,1)} GB')
+    except: pass
+try:
     import onnxruntime as ort
     print(f'  ONNXRuntime: {ort.__version__} providers={ort.get_available_providers()}')
+    if 'CUDAExecutionProvider' in ort.get_available_providers(): print('  GPU: CUDA available')
+    else: print('  GPU: CPU fallback')
 except Exception as e: print(f'  ONNXRuntime: {e}')
-try:
-    import cv2; print(f'  OpenCV: {cv2.__version__}')
+try: import cv2; print(f'  OpenCV: {cv2.__version__}')
 except: pass
 "@
 
-# --- 5. Models ---
-Write-Info "Checking models..."
+# --- 5. Models (auto-download all locally) ---
+Write-Info "Checking & downloading models (local, first time 5-15 min)..."
 if (Test-Path "$Root\scripts\download_models.py") {
   & $VenvPython "$Root\scripts\download_models.py" --check
+  Write-Info "Fetching missing models..."
+  & $VenvPython "$Root\scripts\download_models.py"
+  if (-not (Test-Path "$Root\models\inswapper_128.onnx")) {
+    Write-Warn "CRITICAL: inswapper_128.onnx still missing — run: python scripts/download_models.py"
+    Write-Warn "  Manual: curl -L -o $Root\models\inswapper_128.onnx https://huggingface.co/facefusion/models-3.0.0/resolve/main/inswapper_128.onnx"
+  } else { Write-Ok "Models ready" }
 } else {
   foreach ($f in @("models\inswapper_128.onnx","models\insightface\models\buffalo_l\det_10g.onnx")) {
     if (Test-Path "$Root\$f") { Write-Ok "found $f" } else { Write-Warn "missing $f (see README)" }

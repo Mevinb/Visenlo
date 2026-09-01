@@ -31,12 +31,11 @@ FILES = [
     ("bisenet_resnet_34.onnx", f"{BASE_300}/bisenet_resnet_34.onnx", "face parsing (BiSeNet) — MIT"),
     ("codeformer.onnx",       f"{BASE_300}/codeformer.onnx",       "CodeFormer restoration — CC BY-NC 4.0"),
     ("xseg_1.onnx",           f"{BASE_310}/xseg_1.onnx",           "occlusion mask (XSeg) — GPL-3.0"),
-    # inswapper/reswapper have no canonical public host; we just check presence
+    ("inswapper_128.onnx",    f"{BASE_300}/inswapper_128.onnx",    "swap model 128px — research-only"),
 ]
 
 OPTIONAL_LOCAL = [
-    ("inswapper_128.onnx", "swap model 128px — research-only (copy from existing install or see README)"),
-    ("reswapper_256.onnx", "swap model 256px — research-only, optional"),
+    ("reswapper_256.onnx", "swap model 256px — research-only, optional (no public host)"),
 ]
 
 BUFFALO_FILES = ["det_10g.onnx", "2d106det.onnx", "1k3d68.onnx", "genderage.onnx", "w600k_r50.onnx"]

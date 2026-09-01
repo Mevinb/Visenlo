@@ -94,9 +94,25 @@ then
   printf 'ReactorX: port %s is busy, using %s instead\n' "$START_PORT" "$PORT" >&2
 fi
 
-# Install deps idempotently; keep only desired wheels
-"$ROOT/.venv/bin/python" -m pip uninstall -y onnxruntime opencv-python >/dev/null 2>&1 || true
-"$ROOT/.venv/bin/python" -m pip install -q -r "$ROOT/requirements.txt"
+# Device-aware deps (GPU vs CPU)
+has_nvidia_gpu() {
+  if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then return 0; fi
+  if command -v lspci >/dev/null 2>&1 && lspci 2>/dev/null | grep -qi nvidia; then return 0; fi
+  if [[ -f /proc/driver/nvidia/version ]]; then return 0; fi
+  return 1
+}
+if has_nvidia_gpu; then
+  "$ROOT/.venv/bin/python" -m pip uninstall -y onnxruntime opencv-python >/dev/null 2>&1 || true
+  if ! "$ROOT/.venv/bin/python" -m pip install -q -r "$ROOT/requirements.txt" 2>&1; then
+    echo "[ReactorX] GPU install failed, falling back to CPU" >&2
+    sed 's/onnxruntime-gpu/onnxruntime/' "$ROOT/requirements.txt" > /tmp/req_cpu.txt
+    "$ROOT/.venv/bin/python" -m pip install -q -r /tmp/req_cpu.txt
+  fi
+else
+  "$ROOT/.venv/bin/python" -m pip uninstall -y onnxruntime onnxruntime-gpu opencv-python >/dev/null 2>&1 || true
+  sed 's/onnxruntime-gpu/onnxruntime/' "$ROOT/requirements.txt" > /tmp/req_cpu.txt
+  "$ROOT/.venv/bin/python" -m pip install -q -r /tmp/req_cpu.txt
+fi
 
 # Friendly banner
 echo ""
