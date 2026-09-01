@@ -1,0 +1,19 @@
+services:
+  reactorx:
+    build: .
+    ports:
+      - "7860:7860"
+    volumes:
+      - ./models:/app/models
+      - ./outputs:/app/outputs
+    environment:
+      - GRADIO_SERVER_PORT=7860
+    restart: unless-stopped
+    # For NVIDIA GPU uncomment next 2 lines + install nvidia-container-toolkit
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]

@@ -1,6 +1,6 @@
-# ReactorX Swap Engine v1
+# ReactorX Swap Engine v1 — 100% Local
 
-ReactorX is an independent local application. It does not require Stable
+ReactorX is an independent **local-first** application. It does not require Stable
 Diffusion WebUI or Forge. `Reactorv4` was used as reference only and is not
 imported or modified.
 
@@ -8,17 +8,55 @@ Pipeline: detect -> dense landmarks -> align -> parse -> process references ->
 aggregate identity -> swap -> CodeFormer restoration (optional) -> color match ->
 occlusion recovery -> boundary blend -> identity verification -> auto-save.
 
-## Start
+## Quick start — automatic local install
 
+All processing stays **100% on your device**. No data leaves your machine.
+
+| OS | Command |
+|---|---|
+| **Linux / macOS** | `./install.sh` or `./run.sh` or `python launcher.py` |
+| **Windows (PowerShell)** | `powershell -ExecutionPolicy Bypass -File install.ps1` |
+| **Windows (CMD)** | double-click `install.bat` or `run.bat` |
+| **Docker (optional)** | `docker compose up --build` → http://localhost:7860 |
+
+**Option A — Git clone (recommended):**
 ```bash
+git clone https://github.com/Mevinb/Reactor-X.git
 cd ReactorX
-./run.sh
+python launcher.py              # cross-platform, handles .venv + deps + port automatically
+# or
+./run.sh                        # Linux/macOS
+.\run.bat                       # Windows
 ```
 
+**Option B — ZIP download (no git needed):**
+- Download ZIP from GitHub: `Code → Download ZIP` or your website's Download button
+- Extract → double-click `install.bat` (Windows) or run `./install.sh` (Linux/macOS)
+- For you (maintainer) to create the ZIP: `python scripts/make_dist.py` → `dist/ReactorX-v1.zip` (2 MB, excludes `.venv`/`models/*.onnx`/`outputs`; downloader fetches deps & models on first run)
+
+**Option C — One-line remote install (zero files needed beforehand):**
+```bash
+# Linux / macOS — auto-clones repo if missing:
+curl -fsSL https://YOUR_WEBSITE/install.sh | bash
+# Windows PowerShell — auto-clones repo if missing:
+irm https://YOUR_WEBSITE/install.ps1 | iex
+# Set custom repo with: REACTORX_REPO=https://github.com/Mevinb/Reactor-X.git
+```
+> `install.sh` / `install.ps1` detect `app.py` missing → `git clone` the repo (or ZIP via `curl`/`Invoke-WebRequest` if git unavailable) → then do the same local setup as Option A.
+
 Open `http://127.0.0.1:7860`. The first launch creates `.venv` and installs the
-Python packages. Use `./run.sh --host 0.0.0.0` to expose it on your LAN.
-`./run.sh --port 7861` overrides the port; if the requested port is busy the
-launcher automatically picks the next free port and prints `using X instead`.
+Python packages locally. Use `--host 0.0.0.0` to expose it on your LAN.
+`--port 7861` overrides the port; if busy the launcher picks the next free port.
+
+### What the installer does (all locally)
+1. **Fetches project files** if not present (git clone or ZIP)
+2. Checks Python 3.10+ exists (guides install if missing)
+3. Creates isolated `.venv`, installs `requirements.txt` (idempotent)
+4. Verifies models in `models/` (see `scripts/download_models.py --check`); `buffalo_l` auto-downloads, others via helper/ZIP
+5. Runs `scripts/selfcheck.py` and launches Gradio on loopback (offline-capable after install — no internet needed afterwards)
+
+### How distribution works
+You host only a light download page/redirect. The user gets the **full** `ReactorX/` folder (app.py, reactorx/, requirements.txt, scripts/, models/ placeholder, outputs/) via one of the three options above. Everything after that runs 100% on their device — no code or images ever go to your server.
 
 ## Swapping and saved outputs
 
@@ -177,13 +215,24 @@ This app is intended for images you own or have permission to edit.
 Both ONNX models above are optional; the pipeline logs and degrades gracefully
 without them.
 
-## Self-check
+## Self-check & model helper
 
 ```bash
-.venv/bin/python scripts/selfcheck.py
+.venv/bin/python scripts/selfcheck.py          # 40+ checks, synthetic data only
+.venv/bin/python scripts/download_models.py --check   # verify models
+.venv/bin/python scripts/download_models.py           # download missing (BiSeNet/XSeg/CodeFormer)
+python launcher.py --skip-check               # skip checks for faster launch
 ```
 
 Runs unit checks over the engine stages, pixel-boost roundtrips, templates,
 and (when present) the BiSeNet/XSeg model adapters using synthetic images.
 All 40+ checks should report `ok`; missing optional models are reported as
 `[skip]`.
+
+## Docker (optional, still local)
+
+```bash
+docker compose up --build
+# open http://localhost:7860
+# GPU: uncomment deploy.resources in docker-compose.yml + install nvidia-container-toolkit
+```
