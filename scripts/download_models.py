@@ -79,20 +79,44 @@ def check():
 def download(url: str, dest: Path):
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".tmp")
-    print(f"  downloading {url} -> {dest} ...")
-    # stream download with progress
+    print(f"  downloading {Path(dest).name} ({url}) -> {dest} ...", flush=True)
+    print(f"    -> {url}", flush=True)
+    last_pct = -1
+    last_mb = -1
     def _report(block, bsize, total):
-        if total > 0 and block % 200 == 0:
+        nonlocal last_pct, last_mb
+        if total > 0:
             pct = min(100, block*bsize*100//total)
-            print(f"\r    {pct}% ({block*bsize//1_000_000} MB)", end="", flush=True)
+            mb = block*bsize//1_000_000
+            # Print every 5% or every 2MB to avoid spam, always flush
+            if pct // 5 != last_pct // 5 or mb - last_mb >= 2 or block % 500 == 0:
+                last_pct = pct
+                last_mb = mb
+                # Use \r when TTY, otherwise newline for pipe/tee visibility
+                if sys.stdout.isatty():
+                    print(f"\r    {pct}% ({mb} MB / {total//1_000_000} MB)", end="", flush=True)
+                else:
+                    print(f"    {pct}% ({mb} MB / {total//1_000_000} MB)", flush=True)
+        else:
+            # Unknown total — print dots
+            if block % 100 == 0:
+                print(".", end="", flush=True)
+    # Follow redirects and handle large files with timeout
+    opener = urllib.request.build_opener()
+    opener.addheaders = [("User-Agent", "ReactorX-installer/1.0")]
+    urllib.request.install_opener(opener)
     try:
-        urllib.request.urlretrieve(url, tmp, reporthook=_report if sys.stdout.isatty() else None)
-        if sys.stdout.isatty(): print()
+        # Always use reporthook so piped (tee) also shows progress
+        urllib.request.urlretrieve(url, tmp, reporthook=_report)
+        if sys.stdout.isatty():
+            print(flush=True)
+        else:
+            print(f"    100% done", flush=True)
         tmp.rename(dest)
-        print(f"  [ok] saved {dest} ({dest.stat().st_size/1e6:.1f} MB)")
+        print(f"  [ok] saved {dest.name} ({dest.stat().st_size/1e6:.1f} MB)", flush=True)
         return True
     except Exception as e:
-        print(f"\n  [fail] {e}")
+        print(f"\n  [fail] {dest.name}: {e}", flush=True)
         if tmp.exists(): tmp.unlink(missing_ok=True)
         return False
 

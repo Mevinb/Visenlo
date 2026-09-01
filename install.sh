@@ -226,14 +226,25 @@ except: pass
 info "Checking & downloading models in $ROOT/models (local, ~1.6GB once)..."
 if [[ -f "$ROOT/scripts/download_models.py" ]]; then
   # First show status, then actually fetch missing (handles inswapper_128 + bisenet + xseg + codeformer)
-  $PYBIN "$ROOT/scripts/download_models.py" --check || true
+  $PYBIN -u "$ROOT/scripts/download_models.py" --check || true
   info "Fetching missing models (this may take 5-15 min first time, then cached)..."
-  if $PYBIN "$ROOT/scripts/download_models.py" 2>&1 | tee /tmp/reactorx_models.log; then
+  echo "  (downloading to $ROOT/models — each file shows % and MB; logs also at /tmp/reactorx_models.log)"
+  # Use -u (unbuffered) and stdbuf -oL for line-buffered tee so user sees progress live even when piped
+  set +e
+  if command -v stdbuf >/dev/null 2>&1; then
+    $PYBIN -u "$ROOT/scripts/download_models.py" 2>&1 | stdbuf -oL tee /tmp/reactorx_models.log
+    RET=${PIPESTATUS[0]}
+  else
+    $PYBIN -u "$ROOT/scripts/download_models.py" 2>&1 | tee /tmp/reactorx_models.log
+    RET=${PIPESTATUS[0]}
+  fi
+  set -e
+  if [[ $RET -eq 0 ]]; then
     ok "Models ready (or already present)"
   else
-    warn "Some model downloads failed — see /tmp/reactorx_models.log"
+    warn "Some model downloads failed (exit $RET) — see /tmp/reactorx_models.log"
     warn "  buffalo_l auto-downloads on first swap; for manual: see README 'Getting the models'"
-    cat /tmp/reactorx_models.log | tail -20
+    cat /tmp/reactorx_models.log | tail -30
   fi
 else
   for f in "insightface/models/buffalo_l/det_10g.onnx" "inswapper_128.onnx"; do
