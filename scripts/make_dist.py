@@ -2,7 +2,7 @@
 """Create a distributable ZIP for Option B (no git needed).
 
 Excludes: .venv, models/*.onnx, outputs, .git, caches, etc.
-Usage: python scripts/make_dist.py  -> dist/ReactorX-v1.zip
+Usage: python scripts/make_dist.py  -> dist/Visenlo-v1.zip
 """
 from pathlib import Path
 import zipfile
@@ -26,7 +26,7 @@ def should_exclude(path: Path) -> bool:
             return True
     return False
 
-out = DIST / "ReactorX-v1.zip"
+out = DIST / "Visenlo-v1.zip"
 with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
     for p in ROOT.rglob("*"):
         if p.is_dir():
@@ -36,9 +36,9 @@ with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
         # skip large hidden files
         if p.stat().st_size > 10_000_000 and p.suffix in (".zip",):
             continue
-        arc = Path("ReactorX") / p.relative_to(ROOT)
+        arc = Path("Visenlo") / p.relative_to(ROOT)
         z.write(p, arc)
 
 print(f"[ok] Created {out} ({out.stat().st_size/1e6:.1f} MB)")
-print("  Contains: app.py, reactorx/, requirements.txt, install.sh/.bat/.ps1, launcher.py, scripts/, etc.")
+print("  Contains: app.py, visenlo/, requirements.txt, install.sh/.bat/.ps1, launcher.py, scripts/, etc.")
 print("  Excludes: .venv, models/*.onnx, outputs — downloader runs install.sh to fetch deps & models locally")

@@ -1,4 +1,4 @@
-"""Complete ReactorX v1 pipeline orchestration."""
+"""Complete Visenlo v1 pipeline orchestration."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ from .engine import (
 from .restoration import CodeFormer
 from .restoration.utils import paste_restored_back
 
-logger = logging.getLogger("reactorx")
+logger = logging.getLogger("visenlo")
 if not logger.handlers:
     _handler = logging.StreamHandler()
     _handler.setFormatter(logging.Formatter(
@@ -99,6 +99,34 @@ def parse_swapper_spec(swapper_name):
         else:
             raise ValueError(f"Unsupported pixel-boost size: @{requested}")
     return model_file, boost
+
+
+def candidate_boosts_for(swapper_name, model_file, boost, quality_mode):
+    """Resolve the exact boost factors to run for this request.
+
+    A suffix is an explicit user choice and always wins. Automatic comparison
+    applies only to the unsuffixed inswapper_128 selection.
+    """
+    explicit = bool(str(swapper_name).partition("@")[2])
+    is_inswapper = os.path.basename(model_file) == "inswapper_128.onnx"
+    if str(quality_mode).strip().lower() == "best_likeness" and is_inswapper and not explicit:
+        return (1, 2, 4)
+    return (int(boost),)
+
+
+def select_likeness_candidate(candidates, tolerance=.01):
+    """Pick ``(boost, profile, image, final_score, raw_score)`` safely.
+
+    Scores within ``tolerance`` are indistinguishable for this metric, so keep
+    the normal visual finish first and then prefer the lower boost to reduce
+    tiling artifacts.
+    """
+    verified = [item for item in candidates if item[3] is not None]
+    if not verified:
+        return candidates[0]
+    best_score = max(item[3] for item in verified)
+    eligible = [item for item in verified if item[3] >= best_score - tolerance]
+    return min(eligible, key=lambda item: (item[1] != "default", item[0]))
 
 
 def gender_label(gender):
@@ -223,17 +251,26 @@ class PipelineConfig:
     reference_quality: float = .20
     verification_threshold: float = .30
     color_strength: float = .25
-    codeformer_enabled: bool = False
-    codeformer_weight: float = .8
+    codeformer_enabled: bool = True
+    codeformer_weight: float = .9
     codeformer_verify_identity: bool = True
     sharpen_strength: float = .5
     det_size: int = 640
     det_size_max: int = 1280
     occluder_enabled: bool = True
+    # Best likeness compares native/256/512 pixel-boost candidates before the
+    # optional restorer. Manual preserves the user-selected swapper setting.
+    quality_mode: str = "best_likeness"
+    # Swap the reference lips by default, but retain only target teeth/mouth
+    # interior where the 128px generator is most likely to create artifacts.
+    mouth_mode: str = "swap_lips_keep_teeth"
+    # Deprecated compatibility setting for callers from v1.  New callers use
+    # mouth_mode; this remains so existing integrations do not crash.
+    keep_target_mouth: bool = True
     save_swaps: bool = True
 
 
-class ReactorXPipeline:
+class VisenloPipeline:
     def __init__(self, models_path: str, config: PipelineConfig | None = None):
         import copy
         self.models_path = models_path
@@ -465,6 +502,139 @@ class ReactorXPipeline:
                                        boost, paste_back=paste_back)
         return swapper.get(image, record.face, source, paste_back=paste_back)
 
+    @staticmethod
+    def _face_overlap(a, b):
+        """Intersection over union for two (x1, y1, x2, y2) face boxes."""
+        ax1, ay1, ax2, ay2 = a
+        bx1, by1, bx2, by2 = b
+        ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+        ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+        inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+        area_a = max(1, ax2 - ax1) * max(1, ay2 - ay1)
+        area_b = max(1, bx2 - bx1) * max(1, by2 - by1)
+        return inter / float(area_a + area_b - inter)
+
+    def _output_embedding(self, image, target_record):
+        """Embed the generated face that best occupies the original target slot."""
+        generated = self._detect(image)
+        if not generated:
+            return None, 0
+        tx = (target_record.bbox[0] + target_record.bbox[2]) * .5
+        ty = (target_record.bbox[1] + target_record.bbox[3]) * .5
+        diagonal = max(1.0, np.hypot(target_record.bbox[2] - target_record.bbox[0],
+                                     target_record.bbox[3] - target_record.bbox[1]))
+
+        def score(item):
+            cx = (item.bbox[0] + item.bbox[2]) * .5
+            cy = (item.bbox[1] + item.bbox[3]) * .5
+            distance = np.hypot(cx - tx, cy - ty) / diagonal
+            return self._face_overlap(item.bbox, target_record.bbox) - distance * .15
+
+        matched = max(generated, key=score)
+        logger.info("  post-swap detect: %d face(s), matched bbox=%s score=%.3f",
+                    len(generated), tuple(map(int, matched.bbox)), matched.score)
+        return matched.embedding, len(generated)
+
+    def _reference_similarity(self, image, target_record, identity):
+        embedding, _ = self._output_embedding(image, target_record)
+        return cosine(identity, embedding) if embedding is not None else None
+
+    def _postprocess(self, swapped, target, target_record, cfg, conservative=False):
+        """Apply image-preserving corrections to one already pasted-back swap."""
+        shape = target.shape
+        face_mask = build_face_mask(target_record.bbox, shape,
+                                    landmarks=target_record.landmarks)
+        # Color comes from contiguous skin, not high-contrast eyes/teeth or
+        # target hair. This prevents LAB transfer from tinting the eye whites.
+        interior = composite_region_mask(
+            target_record, shape, ("skin", "eyebrows", "nose", "lips", "neck"))
+        face_px = max(int(target_record.bbox[2] - target_record.bbox[0]), 1)
+        if interior is None:
+            erode_k = max(3, int(face_px * .08)) | 1
+            interior = cv2.erode(face_mask, np.ones((erode_k, erode_k), np.uint8))
+
+        # In best-likeness mode this path is also run with cosmetic stages off.
+        # That lets the similarity check reject a finish that drifts toward the
+        # target's coloring or edge detail.
+        color_strength = 0.0 if conservative else cfg.color_strength
+        corrected = color_match(swapped, target, interior, color_strength)
+        result = np.clip(corrected, 0, 255).astype(np.uint8)
+        logger.info("  color match: strength=%.2f (visible face interior)", color_strength)
+
+        if cfg.occluder_enabled and self._occluder is not None:
+            occ_full = self._occluder.map_to_frame(target_record, target)
+            if occ_full is not None:
+                result = (result.astype(np.float32) * (1 - occ_full[:, :, None]) +
+                          target.astype(np.float32) * occ_full[:, :, None]).astype(np.uint8)
+                logger.info("  occlusion mask: xseg applied")
+        result = recover_occlusions(target, result, face_mask)
+
+        if cfg.sharpen_strength > 0 and not conservative:
+            amount = cfg.sharpen_strength * .5
+            sigma = max(1.0, face_px * .006)
+            result = sharpen_face_region(result, interior, amount=amount, sigma=sigma)
+            logger.info("  face-region sharpen: amount=%.2f sigma=%.1f (face ~%dpx)",
+                        amount, sigma, face_px)
+
+        mouth_mode = str(getattr(cfg, "mouth_mode", "") or "").strip().lower()
+        # Upgrade old API calls without changing their behavior. New UI calls
+        # always provide mouth_mode.
+        if not mouth_mode:
+            mouth_mode = "keep_target_mouth" if bool(getattr(cfg, "keep_target_mouth", True)) else "swap_mouth"
+        if mouth_mode == "keep_target_mouth":
+            names = ("lips", "teeth")
+        elif mouth_mode == "swap_lips_keep_teeth":
+            names = ("teeth",)
+        else:
+            names = ()
+        # Do not invent a teeth region from geometric fallback masks. A failed
+        # parser means we keep the generated mouth intact and report why.
+        if names and self._parser is not None:
+            mouth = composite_region_mask(target_record, shape, names,
+                                          dilate_frac=.006, feather_frac=.012)
+            if mouth is not None and float(mouth.max()) > 0:
+                keep = np.clip(mouth, 0, 1)[:, :, None]
+                result = (result.astype(np.float32) * (1 - keep) +
+                          target.astype(np.float32) * keep).astype(np.uint8)
+                logger.info("  mouth preserve: target %s kept (cov=%.2f%%)",
+                            "+".join(names), float(mouth.mean() * 100))
+        elif names:
+            logger.warning("  mouth preserve skipped: face parser unavailable")
+        return result
+
+    def _restore_candidate(self, candidate, target, target_record, identity, cfg):
+        """Restore through CodeFormer's FFHQ geometry, then guard likeness."""
+        from .parsing import aligned_crop_matrix
+
+        kps = getattr(target_record.face, "kps", None)
+        if kps is None:
+            logger.warning("  CodeFormer skipped: target landmarks unavailable")
+            return candidate, False
+        matrix = aligned_crop_matrix(kps, 512)
+        if matrix is None:
+            logger.warning("  CodeFormer skipped: unable to make FFHQ alignment")
+            return candidate, False
+        aligned = cv2.warpAffine(candidate, matrix, (512, 512), flags=cv2.INTER_LANCZOS4,
+                                 borderMode=cv2.BORDER_REFLECT_101)
+        codeformer = self._ensure_codeformer()
+        restored = codeformer.restore_aligned(aligned)
+        # `matrix` maps full image -> 512px FFHQ crop. Passing swap_size=512
+        # keeps the restored crop and mask in this same coordinate system.
+        restored_frame = paste_restored_back(restored, matrix, 512, candidate,
+                                             target_record.landmarks)
+        restored_frame = self._postprocess(restored_frame, target, target_record, cfg)
+        before = self._reference_similarity(candidate, target_record, identity)
+        after = self._reference_similarity(restored_frame, target_record, identity)
+        if after is None:
+            logger.warning("  CodeFormer rejected: enhanced candidate could not be verified")
+            return candidate, False
+        if before is not None and after < before - .01:
+            logger.warning("  CodeFormer rejected: reference similarity %.3f -> %.3f", before, after)
+            return candidate, False
+        logger.info("  CodeFormer accepted: reference similarity %s -> %.3f",
+                    "unavailable" if before is None else f"{before:.3f}", after)
+        return restored_frame, True
+
     def process(self, references: list[np.ndarray], target: np.ndarray, source_index=0,
                 target_index=0, swapper_name="inswapper_128.onnx", match_mode="index"):
         started = time.perf_counter()
@@ -472,7 +642,7 @@ class ReactorXPipeline:
         if match_mode not in ("index", "gender"):
             raise ValueError("match_mode must be 'index' or 'gender'")
         logger.info("=" * 60)
-        logger.info("ReactorX pipeline started")
+        logger.info("Visenlo pipeline started")
         logger.info("  swapper:   %s", swapper_name)
         logger.info("  target:    %dx%d", target.shape[1], target.shape[0])
         logger.info("  references: %d", len(references))
@@ -546,107 +716,80 @@ class ReactorXPipeline:
             parse_face(target, target_record, self._parser)
             source = virtual_face(identity, reference_records[0].face)
 
-            # The swapper's paste-back already produces a complete full-face swap
-            # with its own blend mask. With CodeFormer enabled we instead extract the
-            # aligned swapped face, restore it, and paste the restored face back.
-            use_codeformer = cfg.codeformer_enabled
-            t0 = time.perf_counter()
-            if use_codeformer:
-                aligned, matrix = self._run_swap(swapper, target.copy(), target_record,
-                                                 source, boost, paste_back=False)
-                if aligned is None:
-                    raise RuntimeError("Face swap model returned no image")
-                logger.info("  swap: aligned crop %dx%d (took %.2fs)",
-                           aligned.shape[1], aligned.shape[0], time.perf_counter() - t0)
-                codeformer = self._ensure_codeformer()
-                t1 = time.perf_counter()
-                restored = codeformer.restore_aligned(aligned)
-                logger.info("  CodeFormer: restored %dx%d (took %.2fs, weight=%.2f)",
-                           restored.shape[1], restored.shape[0],
-                           time.perf_counter() - t1, cfg.codeformer_weight)
-                if cfg.codeformer_verify_identity and not self._restoration_keeps_identity(
-                        aligned, restored, identity, target_record):
-                    logger.warning("  identity check failed: CodeFormer altered identity, falling back to plain swap")
-                    swapped = self._run_swap(swapper, target.copy(), target_record,
-                                             source, boost, paste_back=True)
-                    use_codeformer = False
-                else:
-                    logger.info("  identity check: PASSED (CodeFormer preserves identity)")
-                    swapped = paste_restored_back(restored, matrix, aligned.shape[0], target,
-                                                  target_record.landmarks)
-            else:
-                swapped = self._run_swap(swapper, target.copy(), target_record,
-                                         source, boost, paste_back=True)
+            quality_mode = str(getattr(cfg, "quality_mode", "manual")).strip().lower()
+            is_inswapper = os.path.basename(model_file) == "inswapper_128.onnx"
+            explicit_boost = bool(str(swapper_name).partition("@")[2])
+            candidate_boosts = candidate_boosts_for(
+                swapper_name, model_file, boost, quality_mode)
+            candidates = []
+            profiles = (("default", False),)
+            if quality_mode == "best_likeness" and is_inswapper:
+                profiles += (("identity-preserving", True),)
+            for candidate_boost in candidate_boosts:
+                t0 = time.perf_counter()
+                swapped = self._run_swap(swapper, target.copy(), target_record, source,
+                                         candidate_boost, paste_back=True)
                 if swapped is None:
-                    raise RuntimeError("Face swap model returned no image")
-                logger.info("  swap: plain paste-back %dx%d (took %.2fs)",
-                            swapped.shape[1], swapped.shape[0], time.perf_counter() - t0)
+                    logger.warning("  candidate x%d returned no image", candidate_boost)
+                    continue
+                raw_similarity = self._reference_similarity(swapped, target_record, identity)
+                for profile, conservative in profiles:
+                    candidate = self._postprocess(
+                        swapped, target, target_record, cfg, conservative=conservative)
+                    similarity = self._reference_similarity(candidate, target_record, identity)
+                    logger.info("  candidate x%d %s: raw=%s final=%s (%.2fs)",
+                                candidate_boost, profile,
+                                "unverified" if raw_similarity is None else f"{raw_similarity:.3f}",
+                                "unverified" if similarity is None else f"{similarity:.3f}",
+                                time.perf_counter() - t0)
+                    candidates.append((candidate_boost, profile, candidate,
+                                       similarity, raw_similarity))
+            if not candidates:
+                raise RuntimeError("Face swap model returned no image")
 
-            shape = target.shape
-            face_mask = build_face_mask(target_record.bbox, shape,
-                                        landmarks=target_record.landmarks)
-            # Tight interior (skin + features) keeps color/sharpen statistics on
-            # actual face pixels instead of hair/background diluting them.
-            interior = composite_region_mask(
-                target_record, shape, ("skin", "eyebrows", "nose", "lips", "eyes", "neck"))
-            face_px = max(int(target_record.bbox[2] - target_record.bbox[0]), 1)
-            if interior is None:
-                erode_k = max(3, int(face_px * .08)) | 1
-                interior = cv2.erode(face_mask, np.ones((erode_k, erode_k), np.uint8))
+            selected_boost, selected_profile, result, confidence, raw_confidence = (
+                select_likeness_candidate(candidates))
+            logger.info("  selected candidate: x%d %s (raw=%s final=%s)",
+                        selected_boost, selected_profile,
+                        "unverified" if raw_confidence is None else f"{raw_confidence:.3f}",
+                        "unverified" if confidence is None else f"{confidence:.3f}")
 
-            corrected = color_match(swapped, target, interior, cfg.color_strength)
-            result = np.clip(corrected, 0, 255).astype(np.uint8)
-            logger.info("  color match: strength=%.2f (interior mask)", cfg.color_strength)
-
-            # Model-based occluders first (glasses, hands, hair over the face).
-            if cfg.occluder_enabled and self._occluder is not None:
-                occ_full = self._occluder.map_to_frame(target_record, target)
-                if occ_full is not None:
-                    result = (result.astype(np.float32) * (1 - occ_full[:, :, None]) +
-                              target.astype(np.float32) * occ_full[:, :, None]).astype(np.uint8)
-                    logger.info("  occlusion mask: xseg applied")
-
-            # Restore only occluders (hair strands, glasses) that intrude from the
-            # face boundary. The interior of the swapped face is left intact.
-            result = recover_occlusions(target, result, face_mask)
-            logger.info("  occlusion recovery: complete")
-
-            if cfg.sharpen_strength > 0:
-                amount = cfg.sharpen_strength * .5
-                sigma = max(1.0, face_px * .006)
-                result = sharpen_face_region(result, interior, amount=amount, sigma=sigma)
-                logger.info("  face-region sharpen: amount=%.2f sigma=%.1f (face ~%dpx)",
-                            amount, sigma, face_px)
-
-            # Detect and embed the generated face for actual post-swap verification.
-            generated = self._detect(result)
-            generated_embedding = None
-            if generated:
-                target_center = (target_record.bbox[0] + target_record.bbox[2]) * .5
-                matched = min(generated, key=lambda item: abs((item.bbox[0] + item.bbox[2]) * .5 - target_center))
-                generated_embedding = matched.embedding
-                logger.info("  post-swap detect: %d face(s), matched bbox=%s score=%.3f",
-                           len(generated), tuple(map(int, matched.bbox)), matched.score)
-            else:
-                logger.warning("  post-swap detect: no faces found")
-            confidence = cosine(identity, generated_embedding) if generated_embedding is not None else 0.0
-            verdict = "verified" if confidence >= cfg.verification_threshold else "LOW CONFIDENCE"
-            restoration = (f"CodeFormer w={cfg.codeformer_weight:.2f}"
-                           if use_codeformer else "off")
+            use_codeformer = False
+            if cfg.codeformer_enabled:
+                t1 = time.perf_counter()
+                result, use_codeformer = self._restore_candidate(
+                    result, target, target_record, identity, cfg)
+                logger.info("  CodeFormer stage: %s (%.2fs, w=%.2f)",
+                            "accepted" if use_codeformer else "skipped/rejected",
+                            time.perf_counter() - t1, cfg.codeformer_weight)
+                confidence = self._reference_similarity(result, target_record, identity)
+            confidence_value = 0.0 if confidence is None else confidence
+            verdict = "verified" if confidence is not None and confidence >= cfg.verification_threshold else "UNVERIFIED/LOW CONFIDENCE"
+            restoration = f"CodeFormer w={cfg.codeformer_weight:.2f}" if use_codeformer else "off"
             extras = []
-            if boost > 1:
-                extras.append(f"pixel-boost x{boost}")
+            if explicit_boost and selected_boost > 1:
+                extras.append(f"requested pixel-boost {selected_boost * 128}px (x{selected_boost})")
+            elif quality_mode == "best_likeness" and is_inswapper:
+                extras.append(f"best-likeness x{selected_boost} {selected_profile} (compared 128/256/512)")
+            elif selected_boost > 1:
+                extras.append(f"pixel-boost x{selected_boost}")
             if self._parser is not None:
                 extras.append("parsing")
             if cfg.occluder_enabled and self._occluder is not None:
                 extras.append("occluder")
+            mouth_mode = str(getattr(cfg, "mouth_mode", "")).strip().lower()
+            if mouth_mode == "swap_lips_keep_teeth":
+                extras.append("target-teeth")
+            elif mouth_mode == "keep_target_mouth":
+                extras.append("target-mouth")
             extra_str = f" | {' | '.join(extras)}" if extras else ""
             match_str = (""
                          if match_mode != "gender" else
                          f" | gender-matched ({gender_label(source_gender)}): "
                          f"target face {face_idx} of {len(targets)}")
-            logger.info("  identity: confidence=%.3f | %s | threshold=%.2f",
-                        confidence, verdict, cfg.verification_threshold)
+            logger.info("  identity: reference similarity=%s | %s | threshold=%.2f",
+                        "unavailable" if confidence is None else f"{confidence:.3f}",
+                        verdict, cfg.verification_threshold)
             logger.info("  total time: %.2fs", time.perf_counter() - started)
 
             # Persist every completed swap as <date>_<NN>.png; a failed save
@@ -666,8 +809,12 @@ class ReactorXPipeline:
                     logger.warning("  could not save swapped image: %s", exc)
 
             logger.info("=" * 60)
-            status = (f"ReactorX complete | references accepted: {len(reference_records)} | "
-                      f"identity confidence: {confidence:.3f} | {verdict} | "
+            status = (f"Visenlo complete | references accepted: {len(reference_records)} | "
+                      f"reference similarity: {confidence_value:.3f} | {verdict} | "
                       f"restoration: {restoration}{extra_str}{match_str} | "
                       f"{time.perf_counter() - started:.2f}s{saved_note}")
             return result, status
+
+
+# Backward compatibility: old ReactorX name still resolves to the same pipeline.
+ReactorXPipeline = VisenloPipeline

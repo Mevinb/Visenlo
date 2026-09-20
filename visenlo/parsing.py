@@ -121,7 +121,7 @@ class XSegOccluder:
         keep_mask = np.squeeze(np.asarray(out, np.float32))
         if keep_mask.ndim != 2:
             raise ValueError(f"xseg_1 output has unsupported layout {np.asarray(out).shape}")
-        # XSeg emits high values for valid face pixels. ReactorX consumes an
+        # XSeg emits high values for valid face pixels. Visenlo consumes an
         # occluder mask (high = restore the original target), so invert in crop
         # space before warping. Inverting after warp would mark the entire area
         # outside the aligned crop as occluded.

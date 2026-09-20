@@ -1,4 +1,4 @@
-# ReactorX — optional local Docker container
+# Visenlo — optional local Docker container
 # Still runs entirely on the user's machine (no external service).
 # Build & run: docker compose up --build  -> http://localhost:7860
 FROM python:3.11-slim
@@ -24,7 +24,7 @@ RUN pip install --upgrade pip && \
     pip install onnxruntime
 
 COPY app.py ./ 
-COPY reactorx ./reactorx
+COPY visenlo ./visenlo
 COPY scripts ./scripts
 
 # Models are mounted as volume; buffalo_l auto-downloads on first run

@@ -1,4 +1,4 @@
-"""CodeFormer restoration facade for the ReactorX pipeline."""
+"""CodeFormer restoration facade for the Visenlo pipeline."""
 
 from __future__ import annotations
 

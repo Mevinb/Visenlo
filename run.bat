@@ -1,12 +1,12 @@
 @echo off
-REM ReactorX local launcher for Windows (CMD)
+REM Visenlo local launcher for Windows (CMD)
 REM Usage: run.bat [--host 127.0.0.1] [--port 7860] [--share]
 
 setlocal
 set ROOT=%~dp0
 
 if not exist "%ROOT%.venv\Scripts\python.exe" (
-  echo [ReactorX] No virtual environment found — running installer...
+  echo [Visenlo] No virtual environment found — running installer...
   call "%ROOT%install.bat" %*
   exit /b %errorlevel%
 )
@@ -43,7 +43,7 @@ goto parse
 
 :run
 echo.
-echo   ReactorX running 100%% locally
+echo   Visenlo running 100%% locally
 echo   URL: http://%HOST%:%PORT%
 echo   Models: %ROOT%models
 echo.

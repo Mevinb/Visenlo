@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ReactorX — One-shot local installer & launcher for Linux / macOS
+# Visenlo — One-shot local installer & launcher for Linux / macOS
 # Usage:
 #   bash install.sh [--port 7860] [--host 127.0.0.1]
 #   OR hosted: curl -fsSL https://YOUR_WEBSITE/install.sh | bash
@@ -13,8 +13,8 @@
 set -euo pipefail
 
 # Where to get the full project if user just ran: curl .../install.sh | bash (no files yet)
-REPO_URL="${REACTORX_REPO:-https://github.com/Mevinb/Reactor-X.git}"
-REPO_ZIP="${REACTORX_ZIP:-https://github.com/Mevinb/Reactor-X/archive/refs/heads/main.zip}"
+REPO_URL="${VISENLO_REPO:-${REACTORX_REPO:-https://github.com/Mevinb/Visenlo.git}}"
+REPO_ZIP="${VISENLO_ZIP:-${REACTORX_ZIP:-https://github.com/Mevinb/Visenlo/archive/refs/heads/main.zip}}"
 
 # Fix: BASH_SOURCE is unbound when piped (curl | bash) under set -u — use :- fallback
 _SRC="${BASH_SOURCE[0]:-${0:-}}"
@@ -27,47 +27,47 @@ fi
 if [[ ! -f "$ROOT/app.py" ]]; then
   if [[ -f "$PWD/app.py" ]]; then
     ROOT="$PWD"
-  elif [[ -f "./ReactorX/app.py" ]]; then
-    ROOT="$PWD/ReactorX"
+  elif [[ -f "./Visenlo/app.py" ]]; then
+    ROOT="$PWD/Visenlo"
   else
-    echo "[ReactorX] Project files not found — fetching from $REPO_URL ..."
+    echo "[Visenlo] Project files not found — fetching from $REPO_URL ..."
     if command -v git >/dev/null 2>&1; then
-      if [[ -d "./ReactorX/.git" ]]; then
-        echo "[ReactorX] Updating existing ReactorX/ ..."
-        git -C "./ReactorX" pull --ff-only || true
-        ROOT="$PWD/ReactorX"
+      if [[ -d "./Visenlo/.git" ]]; then
+        echo "[Visenlo] Updating existing Visenlo/ ..."
+        git -C "./Visenlo" pull --ff-only || true
+        ROOT="$PWD/Visenlo"
       else
-        git clone "$REPO_URL" ReactorX
-        ROOT="$PWD/ReactorX"
+        git clone "$REPO_URL" Visenlo
+        ROOT="$PWD/Visenlo"
       fi
     elif command -v curl >/dev/null 2>&1; then
-      echo "[ReactorX] git not found, downloading zip via curl ..."
-      curl -L -o /tmp/reactorx.zip "$REPO_ZIP"
+      echo "[Visenlo] git not found, downloading zip via curl ..."
+      curl -L -o /tmp/visenlo.zip "$REPO_ZIP"
       if command -v unzip >/dev/null 2>&1; then
-        unzip -q -o /tmp/reactorx.zip -d /tmp
-        # zip extracts to ReactorX-main
+        unzip -q -o /tmp/visenlo.zip -d /tmp
+        # zip extracts to Visenlo-main
         FOUND="$(find /tmp -maxdepth 2 -name "app.py" -type f | head -1)"
         if [[ -n "$FOUND" ]]; then
           DIR="$(dirname "$FOUND")"
-          mkdir -p ./ReactorX
-          cp -r "$DIR"/* ./ReactorX/
-          ROOT="$PWD/ReactorX"
+          mkdir -p ./Visenlo
+          cp -r "$DIR"/* ./Visenlo/
+          ROOT="$PWD/Visenlo"
         fi
       else
-        echo "[ReactorX] Please install git or unzip, or manually: git clone $REPO_URL" >&2
+        echo "[Visenlo] Please install git or unzip, or manually: git clone $REPO_URL" >&2
         exit 1
       fi
     else
-      echo "[ReactorX] No git/curl found. Install git and run: git clone $REPO_URL && cd ReactorX && ./install.sh" >&2
+      echo "[Visenlo] No git/curl found. Install git and run: git clone $REPO_URL && cd Visenlo && ./install.sh" >&2
       exit 1
     fi
   fi
 fi
-echo "[ReactorX] Using project at: $ROOT"
+echo "[Visenlo] Using project at: $ROOT"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
 
-info()  { echo -e "${CYAN}[ReactorX]${NC} $*"; }
+info()  { echo -e "${CYAN}[Visenlo]${NC} $*"; }
 ok()    { echo -e "${GREEN}[ok]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[warn]${NC} $*"; }
 fail()  { echo -e "${RED}[fail]${NC} $*"; }
@@ -108,10 +108,10 @@ detect_system() {
     if command -v nvidia-smi >/dev/null 2>&1; then
       nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null | head -3 | while read line; do info "    $line"; done
     fi
-    echo "nvidia" > /tmp/reactorx_gpu_flag 2>/dev/null || true
+    echo "nvidia" > /tmp/visenlo_gpu_flag 2>/dev/null || true
   else
     info "  GPU: none / not detected — will use CPU (auto fallback, slower but works)"
-    echo "cpu" > /tmp/reactorx_gpu_flag 2>/dev/null || true
+    echo "cpu" > /tmp/visenlo_gpu_flag 2>/dev/null || true
   fi
   # Disk space check
   REQ_MB=4000
@@ -172,7 +172,7 @@ PYBIN="$VENV/bin/python"
 
 # --- Device-aware dependency install ---
 detect_system
-GPU_FLAG="$(cat /tmp/reactorx_gpu_flag 2>/dev/null || echo cpu)"
+GPU_FLAG="$(cat /tmp/visenlo_gpu_flag 2>/dev/null || echo cpu)"
 info "Installing dependencies (this may take 2-5 minutes first time) — mode: $GPU_FLAG ..."
 $PYBIN -m pip install --upgrade pip -q
 # Remove conflicting wheels (onnxruntime vs onnxruntime-gpu collide)
@@ -233,7 +233,7 @@ if [[ -f "$ROOT/scripts/download_models.py" ]]; then
     echo -e "${YELLOW}  │  Model Setup Guide — some models missing              │${NC}"
     echo -e "${YELLOW}  └─────────────────────────────────────────────────────────┘${NC}"
     echo ""
-    echo "  ReactorX does not auto-download models (licensing)."
+    echo "  Visenlo does not auto-download models (licensing)."
     echo "  Follow the Model Setup Guide below, then re-run this installer."
     echo ""
     echo "  Quick setup (run from $ROOT):"
@@ -257,7 +257,7 @@ if [[ -f "$ROOT/scripts/download_models.py" ]]; then
     echo "    [✓] BiSeNet"
     echo "    [✓] XSeg"
     echo "    [✓] CodeFormer"
-    echo "  then run:  ./run.sh  or  python launcher.py  ->  [Launch ReactorX]"
+    echo "  then run:  ./run.sh  or  python launcher.py  ->  [Launch Visenlo]"
     echo ""
     # Don't fail hard — let user read guide, but warn that swaps will need inswapper
     if [[ ! -f "$ROOT/models/inswapper_128.onnx" ]]; then
@@ -285,9 +285,9 @@ if [[ -f "$ROOT/scripts/selfcheck.py" ]]; then
 fi
 
 # --- 6. Launch ---
-info "Starting ReactorX locally..."
+info "Starting Visenlo locally..."
 echo ""
-echo -e "${GREEN}  ReactorX will open at http://127.0.0.1:7860${NC}"
+echo -e "${GREEN}  Visenlo will open at http://127.0.0.1:7860${NC}"
 echo -e "  All processing stays 100% on your device. No images leave your machine."
 echo -e "  Press Ctrl+C to stop."
 echo ""

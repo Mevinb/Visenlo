@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ReactorX cross-platform bootstrap launcher.
+Visenlo cross-platform bootstrap launcher.
 
 - Works on Windows / macOS / Linux with a single command:
     python launcher.py
@@ -40,7 +40,7 @@ RED = "\033[91m"
 NC = "\033[0m"
 
 
-def info(msg): print(f"{CYAN}[ReactorX]{NC} {msg}")
+def info(msg): print(f"{CYAN}[Visenlo]{NC} {msg}")
 def ok(msg): print(f"{GREEN}[ok]{NC} {msg}")
 def warn(msg): print(f"{YELLOW}[warn]{NC} {msg}")
 def fail(msg): print(f"{RED}[fail]{NC} {msg}")
@@ -169,9 +169,9 @@ def model_check():
             # verify critical
             if not (ROOT / "models" / "inswapper_128.onnx").exists():
                 warn("CRITICAL: inswapper_128.onnx still missing — swaps will fail until installed")
-            print("\n  Once you see: [✓] buffalo_l [✓] inswapper_128 [✓] BiSeNet [✓] XSeg [✓] CodeFormer -> [Launch ReactorX]")
+            print("\n  Once you see: [✓] buffalo_l [✓] inswapper_128 [✓] BiSeNet [✓] XSeg [✓] CodeFormer -> [Launch Visenlo]")
         else:
-            ok("All models ready — [Launch ReactorX]")
+            ok("All models ready — [Launch Visenlo]")
     else:
         for rel in ["models/inswapper_128.onnx", "models/insightface/models/buffalo_l/det_10g.onnx"]:
             p = ROOT / rel
@@ -189,7 +189,7 @@ def selfcheck():
 
 
 def main():
-    parser = argparse.ArgumentParser(description="ReactorX local launcher (100% on-device)")
+    parser = argparse.ArgumentParser(description="Visenlo local launcher (100% on-device)")
     parser.add_argument("--host", default="127.0.0.1", help="Bind address (default 127.0.0.1, use 0.0.0.0 for LAN)")
     parser.add_argument("--port", type=int, default=7860, help="Preferred port (default 7860)")
     parser.add_argument("--share", action="store_true", help="Create temporary public Gradio link")
@@ -197,7 +197,7 @@ def main():
     parser.add_argument("--skip-check", action="store_true", help="Skip system/model/self checks")
     args = parser.parse_args()
 
-    print(f"\n{CYAN}ReactorX — 100% local face-swap engine{NC}")
+    print(f"\n{CYAN}Visenlo — 100% local face-swap engine{NC}")
     print(f"  All processing stays on your device. No images leave your machine.\n")
 
     check_python()
@@ -213,8 +213,8 @@ def main():
     if port != args.port:
         warn(f"Port {args.port} busy, using {port} instead")
 
-    info(f"Starting ReactorX at http://{args.host}:{port}")
-    print(f"  Models: {os.environ.get('REACTORX_MODELS', str(ROOT / 'models'))}")
+    info(f"Starting Visenlo at http://{args.host}:{port}")
+    print(f"  Models: {os.environ.get('VISENLO_MODELS', os.environ.get('REACTORX_MODELS', str(ROOT / 'models')))}")
     print(f"  Outputs: {ROOT / 'outputs'}\n")
 
     cmd = [str(VENV_PY), str(APP), "--host", args.host, "--port", str(port)]

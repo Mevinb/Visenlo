@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ReactorX local launcher — fully automatic & local
+# Visenlo local launcher — fully automatic & local
 # - Creates .venv if missing
 # - Installs requirements (idempotent)
 # - Picks free port, launches Gradio on 127.0.0.1 by default
@@ -25,16 +25,16 @@ find_python() {
 if [[ ! -d "$ROOT/.venv" ]]; then
   PY=""
   if ! PY=$(find_python); then
-    echo "ReactorX: Python 3.10+ not found. Install from https://www.python.org/downloads/" >&2
+    echo "Visenlo: Python 3.10+ not found. Install from https://www.python.org/downloads/" >&2
     echo "  Ubuntu: sudo apt install python3.11 python3.11-venv" >&2
     echo "  macOS:  brew install python@3.11" >&2
     exit 1
   fi
-  echo "[ReactorX] Creating virtual environment with $PY ..."
+  echo "[Visenlo] Creating virtual environment with $PY ..."
   "$PY" -m venv "$ROOT/.venv"
 fi
 if [[ ! -x "$ROOT/.venv/bin/python" ]]; then
-  echo "ReactorX could not create its virtual environment" >&2
+  echo "Visenlo could not create its virtual environment" >&2
   exit 1
 fi
 
@@ -55,7 +55,7 @@ for port in range(start, start + 50):
         try: sock.bind((host, port))
         except OSError: continue
         print(port); raise SystemExit(0)
-raise SystemExit(f"ReactorX could not find a free port near {start}")
+raise SystemExit(f"Visenlo could not find a free port near {start}")
 PY
 }
 
@@ -72,7 +72,7 @@ while (($#)); do
 done
 
 if [[ "$SHOW_HELP" == true ]]; then
-  echo "ReactorX — 100% local face-swap engine"
+  echo "Visenlo — 100% local face-swap engine"
   echo "Usage: ./run.sh [--host IP] [--port PORT] [--share]"
   echo "  --host  Bind address (default 127.0.0.1, use 0.0.0.0 for LAN)"
   echo "  --port  Preferred port (default 7860, auto-increments if busy)"
@@ -91,7 +91,7 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
 PY
 then
   PORT="$(pick_port "$HOST" "$((START_PORT + 1))")"
-  printf 'ReactorX: port %s is busy, using %s instead\n' "$START_PORT" "$PORT" >&2
+  printf 'Visenlo: port %s is busy, using %s instead\n' "$START_PORT" "$PORT" >&2
 fi
 
 # Device-aware deps (GPU vs CPU)
@@ -104,7 +104,7 @@ has_nvidia_gpu() {
 if has_nvidia_gpu; then
   "$ROOT/.venv/bin/python" -m pip uninstall -y onnxruntime opencv-python >/dev/null 2>&1 || true
   if ! "$ROOT/.venv/bin/python" -m pip install -q -r "$ROOT/requirements.txt" 2>&1; then
-    echo "[ReactorX] GPU install failed, falling back to CPU" >&2
+    echo "[Visenlo] GPU install failed, falling back to CPU" >&2
     sed 's/onnxruntime-gpu/onnxruntime/' "$ROOT/requirements.txt" > /tmp/req_cpu.txt
     "$ROOT/.venv/bin/python" -m pip install -q -r /tmp/req_cpu.txt
   fi
@@ -116,9 +116,9 @@ fi
 
 # Friendly banner
 echo ""
-echo "  ReactorX running 100% locally"
+echo "  Visenlo running 100% locally"
 echo "  URL: http://${HOST}:${PORT}  (no data leaves your device)"
-echo "  Models: ${REACTORX_MODELS:-$ROOT/models}"
+echo "  Models: ${VISENLO_MODELS:-${REACTORX_MODELS:-$ROOT/models}}"
 echo "  Outputs: $ROOT/outputs"
 echo ""
 

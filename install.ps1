@@ -1,4 +1,4 @@
-# ReactorX — One-shot local installer for Windows (PowerShell)
+# Visenlo — One-shot local installer for Windows (PowerShell)
 # Usage:
 #   powershell -ExecutionPolicy Bypass -File install.ps1
 #   OR hosted: irm https://YOUR_WEBSITE/install.ps1 | iex
@@ -9,45 +9,45 @@
 #   - Launches Gradio on 127.0.0.1:7860 (100% local)
 
 $ErrorActionPreference = "Stop"
-$RepoUrl = if ($env:REACTORX_REPO) { $env:REACTORX_REPO } else { "https://github.com/Mevinb/Reactor-X.git" }
-$RepoZip = if ($env:REACTORX_ZIP) { $env:REACTORX_ZIP } else { "https://github.com/Mevinb/Reactor-X/archive/refs/heads/main.zip" }
+$RepoUrl = if ($env:VISENLO_REPO) { $env:VISENLO_REPO } elseif ($env:REACTORX_REPO) { $env:REACTORX_REPO } else { "https://github.com/Mevinb/Visenlo.git" }
+$RepoZip = if ($env:VISENLO_ZIP) { $env:VISENLO_ZIP } elseif ($env:REACTORX_ZIP) { $env:REACTORX_ZIP } else { "https://github.com/Mevinb/Visenlo/archive/refs/heads/main.zip" }
 
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 if (-not (Test-Path "$Root\app.py")) {
   if (Test-Path "$(Get-Location)\app.py") { $Root = Get-Location }
-  elseif (Test-Path "$(Get-Location)\ReactorX\app.py") { $Root = "$(Get-Location)\ReactorX" }
+  elseif (Test-Path "$(Get-Location)\Visenlo\app.py") { $Root = "$(Get-Location)\Visenlo" }
   else {
-    Write-Host "[ReactorX] Project files not found — fetching from $RepoUrl ..." -ForegroundColor Cyan
+    Write-Host "[Visenlo] Project files not found — fetching from $RepoUrl ..." -ForegroundColor Cyan
     if (Get-Command git -ErrorAction SilentlyContinue) {
-      if (Test-Path ".\ReactorX\.git") {
-        Write-Host "[ReactorX] Updating existing ReactorX\ ..." -ForegroundColor Cyan
-        & git -C ".\ReactorX" pull --ff-only 2>$null
-        $Root = "$(Get-Location)\ReactorX"
+      if (Test-Path ".\Visenlo\.git") {
+        Write-Host "[Visenlo] Updating existing Visenlo\ ..." -ForegroundColor Cyan
+        & git -C ".\Visenlo" pull --ff-only 2>$null
+        $Root = "$(Get-Location)\Visenlo"
       } else {
-        & git clone $RepoUrl ReactorX
+        & git clone $RepoUrl Visenlo
         if ($LASTEXITCODE -ne 0) { Write-Host "[fail] git clone failed" -ForegroundColor Red; exit 1 }
-        $Root = "$(Get-Location)\ReactorX"
+        $Root = "$(Get-Location)\Visenlo"
       }
     } else {
-      Write-Host "[ReactorX] git not found, downloading zip ..." -ForegroundColor Yellow
-      $zip = "$env:TEMP\reactorx.zip"
+      Write-Host "[Visenlo] git not found, downloading zip ..." -ForegroundColor Yellow
+      $zip = "$env:TEMP\visenlo.zip"
       try { Invoke-WebRequest -Uri $RepoZip -OutFile $zip -UseBasicParsing } catch { Write-Host "[fail] Download failed: $_" -ForegroundColor Red; exit 1 }
-      $dest = "$env:TEMP\reactorx_extract"
+      $dest = "$env:TEMP\visenlo_extract"
       if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
       Expand-Archive -Path $zip -DestinationPath $dest -Force
       $found = Get-ChildItem -Path $dest -Recurse -Filter "app.py" | Select-Object -First 1
       if ($found) {
         $dir = $found.DirectoryName
-        if (-not (Test-Path ".\ReactorX")) { New-Item -ItemType Directory -Path ".\ReactorX" | Out-Null }
-        Copy-Item -Path "$dir\*" -Destination ".\ReactorX" -Recurse -Force
-        $Root = "$(Get-Location)\ReactorX"
+        if (-not (Test-Path ".\Visenlo")) { New-Item -ItemType Directory -Path ".\Visenlo" | Out-Null }
+        Copy-Item -Path "$dir\*" -Destination ".\Visenlo" -Recurse -Force
+        $Root = "$(Get-Location)\Visenlo"
       } else { Write-Host "[fail] Could not find app.py in zip" -ForegroundColor Red; exit 1 }
     }
   }
 }
-Write-Host "[ReactorX] Using project at: $Root" -ForegroundColor Cyan
+Write-Host "[Visenlo] Using project at: $Root" -ForegroundColor Cyan
 
-function Write-Info($msg) { Write-Host "[ReactorX] $msg" -ForegroundColor Cyan }
+function Write-Info($msg) { Write-Host "[Visenlo] $msg" -ForegroundColor Cyan }
 function Write-Ok($msg)   { Write-Host "[ok] $msg" -ForegroundColor Green }
 function Write-Warn($msg) { Write-Host "[warn] $msg" -ForegroundColor Yellow }
 function Write-Fail($msg) { Write-Host "[fail] $msg" -ForegroundColor Red }
@@ -167,7 +167,7 @@ if (Test-Path "$Root\scripts\download_models.py") {
     Write-Host "  │  Model Setup Guide — some models missing              │" -ForegroundColor Yellow
     Write-Host "  └─────────────────────────────────────────────────────────┘" -ForegroundColor Yellow
     Write-Host ""
-    Write-Host "  ReactorX does not auto-download models (licensing)."
+    Write-Host "  Visenlo does not auto-download models (licensing)."
     Write-Host "  Follow the Model Setup Guide below, then re-run this installer."
     Write-Host ""
     Write-Host "  Quick setup (run from $Root):"
@@ -188,7 +188,7 @@ if (Test-Path "$Root\scripts\download_models.py") {
     Write-Host "    [✓] BiSeNet"
     Write-Host "    [✓] XSeg"
     Write-Host "    [✓] CodeFormer"
-    Write-Host "  then run:  .\run.bat  or  python launcher.py  ->  [Launch ReactorX]"
+    Write-Host "  then run:  .\run.bat  or  python launcher.py  ->  [Launch Visenlo]"
     Write-Host ""
     if (-not (Test-Path "$Root\models\inswapper_128.onnx")) {
       Write-Warn "CRITICAL: inswapper_128.onnx missing — swaps will fail until you install it (see guide above)."
@@ -208,9 +208,9 @@ if (Test-Path "$Root\scripts\selfcheck.py") {
 }
 
 # --- 7. Launch ---
-Write-Info "Starting ReactorX locally..."
+Write-Info "Starting Visenlo locally..."
 Write-Host ""
-Write-Host "  ReactorX will open at http://127.0.0.1:7860" -ForegroundColor Green
+Write-Host "  Visenlo will open at http://127.0.0.1:7860" -ForegroundColor Green
 Write-Host "  All processing stays 100% on your device. No images leave your machine."
 Write-Host "  Press Ctrl+C to stop."
 Write-Host ""

@@ -1,5 +1,5 @@
 services:
-  reactorx:
+  visenlo:
     build: .
     ports:
       - "7860:7860"

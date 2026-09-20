@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Helper to verify and optionally download ReactorX models.
+"""Helper to verify and optionally download Visenlo models.
 
 All downloads happen locally on the user's device — no cloud execution.
 buffalo_l pack auto-downloads via insightface; other models are fetched
@@ -20,7 +20,7 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-MODELS = Path(os.environ.get("REACTORX_MODELS", ROOT / "models"))
+MODELS = Path(os.environ.get("VISENLO_MODELS", os.environ.get("REACTORX_MODELS", ROOT / "models")))
 
 # URLs mirror README
 BASE_300 = "https://huggingface.co/facefusion/models-3.0.0/resolve/main"
@@ -103,7 +103,7 @@ def download(url: str, dest: Path):
                 print(".", end="", flush=True)
     # Follow redirects and handle large files with timeout
     opener = urllib.request.build_opener()
-    opener.addheaders = [("User-Agent", "ReactorX-installer/1.0")]
+    opener.addheaders = [("User-Agent", "Visenlo-installer/1.0")]
     urllib.request.install_opener(opener)
     try:
         # Always use reporthook so piped (tee) also shows progress
@@ -122,7 +122,7 @@ def download(url: str, dest: Path):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="ReactorX model helper (local) — licensing: manual setup by default")
+    ap = argparse.ArgumentParser(description="Visenlo model helper (local) — licensing: manual setup by default")
     ap.add_argument("--check", action="store_true", help="only check, don't download (default)")
     ap.add_argument("--download", action="store_true", help="actually download missing models (ensure you comply with each model's license)")
     ap.add_argument("--all", action="store_true", help="check all including optional")
@@ -132,11 +132,11 @@ def main():
     if args.check or not args.download:
         # If user ran without flags, show check + guide (no auto-download)
         if not args.download:
-            print("ReactorX Model Setup Guide (no auto-download — licensing)")
+            print("Visenlo Model Setup Guide (no auto-download — licensing)")
             print("="*60)
         ret = check()
         if ret != 0:
-            print("\nModel Setup Guide — run these from your ReactorX folder:")
+            print("\nModel Setup Guide — run these from your Visenlo folder:")
             print("  BASE=https://huggingface.co/facefusion/models-3.0.0/resolve/main")
             print("  mkdir -p models")
             for rel, url, desc in FILES:
@@ -149,7 +149,7 @@ def main():
             print("\nAfter installing, re-run: python scripts/download_models.py --check")
             print("Once you see:")
             print("  [✓] buffalo_l  [✓] inswapper_128  [✓] BiSeNet  [✓] XSeg  [✓] CodeFormer")
-            print("  -> [Launch ReactorX]")
+            print("  -> [Launch Visenlo]")
             print("\nTo auto-download despite licensing, run: python scripts/download_models.py --download")
         sys.exit(ret)
 

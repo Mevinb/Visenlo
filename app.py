@@ -1,4 +1,4 @@
-"""Standalone Gradio launcher for ReactorX Swap Engine v1."""
+"""Standalone Gradio launcher for Visenlo Swap Engine v1."""
 
 from __future__ import annotations
 
@@ -13,10 +13,10 @@ import gradio as gr
 import numpy as np
 from PIL import Image
 
-from reactorx import PipelineConfig, ReactorXPipeline
+from visenlo import PipelineConfig, VisenloPipeline
 
 ROOT = Path(__file__).resolve().parent
-MODELS = Path(os.environ.get("REACTORX_MODELS", ROOT / "models"))
+MODELS = Path(os.environ.get("VISENLO_MODELS", os.environ.get("REACTORX_MODELS", ROOT / "models")))
 _pipeline = None
 _pipeline_lock = threading.Lock()
 logging.basicConfig(
@@ -24,43 +24,43 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)-7s] %(name)s: %(message)s",
     datefmt="%H:%M:%S",
 )
-logger = logging.getLogger("reactorx.app")
+logger = logging.getLogger("visenlo.app")
 APP_CSS = """
 body { background: #10110f; }
-.rx-title { letter-spacing: .08em; text-transform: uppercase; }
-.rx-status { border-left: 3px solid #b9ff66; padding-left: 12px; }
+.vs-title { letter-spacing: .08em; text-transform: uppercase; }
+.vs-status { border-left: 3px solid #b9ff66; padding-left: 12px; }
 /* Swapped images gallery — fixed height with internal scroll, viewport-fixed lightbox.
    Gradio 5 Gallery uses .grid-wrap (scroll container), .grid-container (grid),
    .thumbnail-lg (tiles) and .preview (lightbox which is absolute by default). */
-.rx-gallery .grid-wrap { height: 520px !important; max-height: 520px !important; min-height: 280px !important; overflow-y: auto !important; overflow-x: hidden !important; border-radius: 8px; scrollbar-width: thin; scrollbar-color: #333 #1a1a1a; }
-.rx-gallery .grid-wrap.fixed-height { height: 520px !important; max-height: 520px !important; min-height: 280px !important; overflow-y: auto !important; overflow-x: hidden !important; }
-.rx-gallery .grid-container { height: auto !important; align-content: start; }
-.rx-gallery .thumbnail-lg img, .rx-gallery .gallery-item img { object-fit: contain !important; background: #1a1a1a; }
-.rx-gallery .preview { position: fixed !important; inset: 0 !important; width: 100vw !important; height: 100vh !important; max-width: 100vw !important; max-height: 100vh !important; display: flex !important; flex-direction: column !important; align-items: center !important; justify-content: center !important; background: rgba(16,17,15,0.92) !important; -webkit-backdrop-filter: blur(8px) !important; backdrop-filter: blur(8px) !important; z-index: 9999 !important; padding: 24px !important; box-sizing: border-box !important; border-radius: 0 !important; }
-.rx-gallery .preview:before { background: transparent !important; opacity: 1 !important; }
-.rx-gallery .preview .media-button { height: auto !important; flex: 1 !important; min-height: 0 !important; width: 100% !important; display: flex !important; align-items: center !important; justify-content: center !important; }
-.rx-gallery .preview .media-button img, .preview .media-button img { object-fit: contain !important; max-width: 92vw !important; max-height: 82vh !important; width: auto !important; height: auto !important; cursor: zoom-out; }
-.rx-gallery .thumbnails img { object-fit: cover !important; }
+.vs-gallery .grid-wrap { height: 520px !important; max-height: 520px !important; min-height: 280px !important; overflow-y: auto !important; overflow-x: hidden !important; border-radius: 8px; scrollbar-width: thin; scrollbar-color: #333 #1a1a1a; }
+.vs-gallery .grid-wrap.fixed-height { height: 520px !important; max-height: 520px !important; min-height: 280px !important; overflow-y: auto !important; overflow-x: hidden !important; }
+.vs-gallery .grid-container { height: auto !important; align-content: start; }
+.vs-gallery .thumbnail-lg img, .vs-gallery .gallery-item img { object-fit: contain !important; background: #1a1a1a; }
+.vs-gallery .preview { position: fixed !important; inset: 0 !important; width: 100vw !important; height: 100vh !important; max-width: 100vw !important; max-height: 100vh !important; display: flex !important; flex-direction: column !important; align-items: center !important; justify-content: center !important; background: rgba(16,17,15,0.92) !important; -webkit-backdrop-filter: blur(8px) !important; backdrop-filter: blur(8px) !important; z-index: 9999 !important; padding: 24px !important; box-sizing: border-box !important; border-radius: 0 !important; }
+.vs-gallery .preview:before { background: transparent !important; opacity: 1 !important; }
+.vs-gallery .preview .media-button { height: auto !important; flex: 1 !important; min-height: 0 !important; width: 100% !important; display: flex !important; align-items: center !important; justify-content: center !important; }
+.vs-gallery .preview .media-button img, .preview .media-button img { object-fit: contain !important; max-width: 92vw !important; max-height: 82vh !important; width: auto !important; height: auto !important; cursor: zoom-out; }
+.vs-gallery .thumbnails img { object-fit: cover !important; }
 @media (max-width: 900px) {
-  .rx-gallery .grid-wrap, .rx-gallery .grid-wrap.fixed-height { height: 420px !important; max-height: 60vh !important; }
+  .vs-gallery .grid-wrap, .vs-gallery .grid-wrap.fixed-height { height: 420px !important; max-height: 60vh !important; }
 }
 /* Target images gallery — thumbnail grid with preview, auto-scales when many images */
-.rx-targets .grid-wrap { height: auto !important; max-height: 520px !important; min-height: 240px !important; overflow-y: auto !important; overflow-x: hidden !important; border-radius: 8px; scrollbar-width: thin; }
-.rx-targets .grid-wrap.fixed-height { max-height: 520px !important; overflow-y: auto !important; min-height: 260px !important; }
-.rx-targets .grid-container { height: auto !important; }
-.rx-targets .thumbnail-lg img, .rx-targets .gallery-item img { object-fit: contain !important; background: #1a1a1a; border-radius: 6px; }
-.rx-targets .preview { position: fixed !important; inset: 0 !important; width: 100vw !important; height: 100vh !important; max-width: 100vw !important; max-height: 100vh !important; display: flex !important; flex-direction: column !important; align-items: center !important; justify-content: center !important; background: rgba(16,17,15,0.92) !important; -webkit-backdrop-filter: blur(8px) !important; backdrop-filter: blur(8px) !important; z-index: 9999 !important; padding: 24px !important; box-sizing: border-box !important; border-radius: 0 !important; }
-.rx-targets .preview:before { background: transparent !important; opacity: 1 !important; }
-.rx-targets .preview .media-button { height: auto !important; flex: 1 !important; min-height: 0 !important; width: 100% !important; display: flex !important; align-items: center !important; justify-content: center !important; }
-.rx-targets .preview img, .rx-targets .preview .media-button img { object-fit: contain !important; max-width: 92vw !important; max-height: 86vh !important; width: auto !important; height: auto !important; cursor: zoom-out; }
-.rx-targets .empty { min-height: 220px; display: flex; align-items: center; justify-content: center; opacity: 0.85; }
+.vs-targets .grid-wrap { height: auto !important; max-height: 520px !important; min-height: 240px !important; overflow-y: auto !important; overflow-x: hidden !important; border-radius: 8px; scrollbar-width: thin; }
+.vs-targets .grid-wrap.fixed-height { max-height: 520px !important; overflow-y: auto !important; min-height: 260px !important; }
+.vs-targets .grid-container { height: auto !important; }
+.vs-targets .thumbnail-lg img, .vs-targets .gallery-item img { object-fit: contain !important; background: #1a1a1a; border-radius: 6px; }
+.vs-targets .preview { position: fixed !important; inset: 0 !important; width: 100vw !important; height: 100vh !important; max-width: 100vw !important; max-height: 100vh !important; display: flex !important; flex-direction: column !important; align-items: center !important; justify-content: center !important; background: rgba(16,17,15,0.92) !important; -webkit-backdrop-filter: blur(8px) !important; backdrop-filter: blur(8px) !important; z-index: 9999 !important; padding: 24px !important; box-sizing: border-box !important; border-radius: 0 !important; }
+.vs-targets .preview:before { background: transparent !important; opacity: 1 !important; }
+.vs-targets .preview .media-button { height: auto !important; flex: 1 !important; min-height: 0 !important; width: 100% !important; display: flex !important; align-items: center !important; justify-content: center !important; }
+.vs-targets .preview img, .vs-targets .preview .media-button img { object-fit: contain !important; max-width: 92vw !important; max-height: 86vh !important; width: auto !important; height: auto !important; cursor: zoom-out; }
+.vs-targets .empty { min-height: 220px; display: flex; align-items: center; justify-content: center; opacity: 0.85; }
 /* Make thumbnails shrink gracefully when many images are present:
    override Gradio's fixed column count so the grid becomes responsive.
    auto-fit collapses empty tracks — single image -> large full-width,
    2-3 -> medium, 6+ -> small tiles that wrap. */
-.rx-targets .grid-container { grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)) !important; }
+.vs-targets .grid-container { grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)) !important; }
 @media (max-width: 900px) {
-  .rx-targets .grid-container { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)) !important; }
+  .vs-targets .grid-container { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)) !important; }
 }
 """
 
@@ -105,7 +105,7 @@ def _check_models():
             # don't block launch solely on buffalo_l (auto)
             # required blocking: inswapper must exist
         else:
-            # file spec: respect MODELS (supports REACTORX_MODELS override)
+            # file spec: respect MODELS (supports VISENLO_MODELS override)
             clean = rel.removeprefix("models/") if rel.startswith("models/") else rel
             p = MODELS / clean
             # handle alt path for codeformer restoration/
@@ -128,7 +128,7 @@ def _check_models():
     if not all_ok:
         guide = '''
 <div style="background:#1a1d1a;border:1px solid #2a332a;border-left:3px solid #b9ff66;padding:12px;border-radius:8px;margin-top:12px">
-<b style="color:#b9ff66">Model Setup Guide</b> — ReactorX does not auto-download models (licensing). Run from your ReactorX folder:
+<b style="color:#b9ff66">Model Setup Guide</b> — Visenlo does not auto-download models (licensing). Run from your Visenlo folder:
 <pre style="background:#0f1110;padding:10px;border-radius:6px;overflow:auto;margin:8px 0;color:#cfe8cf;font-size:0.85em">BASE=https://huggingface.co/facefusion/models-3.0.0/resolve/main
 mkdir -p models
 curl -L -o models/bisenet_resnet_34.onnx $BASE/bisenet_resnet_34.onnx   # BiSeNet ~90MB MIT
@@ -137,16 +137,17 @@ curl -L -o models/inswapper_128.onnx  $BASE/inswapper_128.onnx         # inswapp
 curl -L -o models/xseg_1.onnx https://huggingface.co/facefusion/models-3.1.0/resolve/main/xseg_1.onnx  # XSeg ~68MB GPL
 # buffalo_l auto-downloads on first swap; or: https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip
 python scripts/download_models.py --check   # verify</pre>
-<div style="color:#9aa39a;font-size:0.9em">After installing, click <b>🔄 Re-check Models</b>. When you see all <span style="color:#b9ff66">✓</span>, press <b>Launch ReactorX</b> (Run identity swap).</div>
+<div style="color:#9aa39a;font-size:0.9em">After installing, click <b>🔄 Re-check Models</b>. When you see all <span style="color:#b9ff66">✓</span>, press <b>Launch Visenlo</b> (Run identity swap).</div>
 </div>'''
     else:
-        guide = '<div style="background:#0f1a0f;border:1px solid #2a5a2a;padding:10px;border-radius:8px;margin-top:12px;color:#b9ff66">✓ All models ready — you can now <b>Launch ReactorX</b> (Run identity swap).</div>'
+        guide = '<div style="background:#0f1a0f;border:1px solid #2a5a2a;padding:10px;border-radius:8px;margin-top:12px;color:#b9ff66">✓ All models ready — you can now <b>Launch Visenlo</b> (Run identity swap).</div>'
     html = '<div style="font-family:Inter,system-ui">' + ''.join(rows) + guide + '</div>'
     return html, can_launch
 
 
 def get_pipeline(min_face_size, verify_threshold, color_strength, codeformer_enabled,
-                 codeformer_weight, sharpen_strength, occluder_enabled):
+                 codeformer_weight, sharpen_strength, occluder_enabled,
+                 quality_mode="Best likeness", mouth_mode="Swap lips, keep teeth"):
     global _pipeline
     config = PipelineConfig(min_face_size=int(min_face_size),
                             verification_threshold=float(verify_threshold),
@@ -154,10 +155,16 @@ def get_pipeline(min_face_size, verify_threshold, color_strength, codeformer_ena
                             codeformer_enabled=bool(codeformer_enabled),
                             codeformer_weight=float(codeformer_weight),
                             sharpen_strength=float(sharpen_strength),
-                            occluder_enabled=bool(occluder_enabled))
+                            occluder_enabled=bool(occluder_enabled),
+                            quality_mode=("best_likeness" if str(quality_mode).startswith("Best") else "manual"),
+                            mouth_mode={
+                                "Swap lips, keep teeth": "swap_lips_keep_teeth",
+                                "Keep entire target mouth": "keep_target_mouth",
+                                "Swap entire mouth": "swap_mouth",
+                            }.get(str(mouth_mode), "swap_lips_keep_teeth"))
     with _pipeline_lock:
         if _pipeline is None:
-            _pipeline = ReactorXPipeline(str(MODELS), config)
+            _pipeline = VisenloPipeline(str(MODELS), config)
         else:
             _pipeline.update_config(config)
     return _pipeline
@@ -200,7 +207,7 @@ def _target_path(item):
 def run_swap(targets, ref1, ref2, ref3, ref4, target_index, source_index, match_mode,
              swapper_model, min_face_size, verify_threshold, color_strength,
              codeformer_enabled, codeformer_weight, sharpen_strength,
-             occluder_enabled):
+             occluder_enabled, quality_mode, mouth_mode):
     """Swap one or many selected targets against the same references.
 
     Streams results so the gallery and report update after each image; a
@@ -214,13 +221,15 @@ def run_swap(targets, ref1, ref2, ref3, ref4, target_index, source_index, match_
     mode = "index" if match_mode.startswith("Manual") else "gender"
     files = list(targets) if isinstance(targets, (list, tuple)) else [targets]
     logger.info("Swap requested: %d image(s), swapper=%s target_face_idx=%d "
-                "source_face_idx=%d match_mode=%s codeformer=%s sharpen=%.2f occluder=%s",
+                "source_face_idx=%d match_mode=%s codeformer=%s sharpen=%.2f occluder=%s "
+                "quality=%s mouth=%s",
                 len(files), swapper_model, target_index, source_index, mode,
-                codeformer_enabled, sharpen_strength, occluder_enabled)
+                codeformer_enabled, sharpen_strength, occluder_enabled,
+                quality_mode, mouth_mode)
     references = [_bgr(image) for image in (ref1, ref2, ref3, ref4) if image is not None]
     pipeline = get_pipeline(min_face_size, verify_threshold, color_strength,
                             codeformer_enabled, codeformer_weight, sharpen_strength,
-                            occluder_enabled)
+                            occluder_enabled, quality_mode, mouth_mode)
     gallery, report = [], []
     total = len(files)
     for i, item in enumerate(files):
@@ -247,18 +256,18 @@ def run_swap(targets, ref1, ref2, ref3, ref4, target_index, source_index, match_
 
 def build_ui():
     with gr.Blocks(
-        title="ReactorX Swap Engine v1",
+        title="Visenlo Swap Engine v1",
         theme=gr.themes.Monochrome(),
         css=APP_CSS,
     ) as app:
-        gr.Markdown("# ReactorX Swap Engine v1\nIdentity transfer with target geometry and scene preservation.", elem_classes="rx-title")
+        gr.Markdown("# Visenlo Swap Engine v1\nIdentity transfer with target geometry and scene preservation.", elem_classes="vs-title")
         # --- Model Setup Guide (licensing: checker -> guide -> launch) ---
         init_html, init_can = _check_models()
         with gr.Accordion("Model Setup Guide — checker → guide → Launch", open=not init_can) as model_acc:
             model_html = gr.HTML(init_html)
             with gr.Row():
                 recheck_btn = gr.Button("🔄 Re-check Models", variant="secondary", size="sm")
-                launch_info = gr.Markdown("✅ Ready" if init_can else "❌ Missing models — follow guide above", elem_classes="rx-status")
+                launch_info = gr.Markdown("✅ Ready" if init_can else "❌ Missing models — follow guide above", elem_classes="vs-status")
         with gr.Row():
             with gr.Column(scale=5):
                 targets = gr.Gallery(
@@ -273,7 +282,7 @@ def build_ui():
                     file_types=["image"],
                     type="filepath",
                     interactive=True,
-                    elem_classes="rx-targets",
+                    elem_classes="vs-targets",
                 )
                 with gr.Row():
                     upload_btn = gr.UploadButton("Add images", file_count="multiple", file_types=["image"], variant="secondary", size="sm")
@@ -305,15 +314,22 @@ def build_ui():
                     choices=SWAPPER_CHOICES,
                     value="inswapper_128.onnx",
                     label="Face swap model",
-                    info="128px standard, @256/@512/@1024/@2048 pixel-boost (sharper, slower), or the 256px model.",
+                    info="An explicit @256/@512/@1024/@2048 choice always runs that pixel boost. The plain 128px choice can use automatic comparison.",
                 )
                 verify_threshold = gr.Slider(0, 1, value=.30, step=.01, label="Identity threshold")
                 color_strength = gr.Slider(0, 1, value=.25, step=.05, label="Color matching", info="How much to blend the swapped face toward target lighting. Lower keeps the reference identity stronger.")
+                quality_mode = gr.Radio(
+                    ["Best likeness", "Manual"], value="Best likeness", label="Quality mode",
+                    info="With plain inswapper_128, compares 128px, 256px and 512px candidates. Explicit pixel-boost choices are always honored.")
             with gr.Row():
-                codeformer_enabled = gr.Checkbox(value=False, label="Enable CodeFormer restoration", info="Restores facial texture on the aligned swapped face before blending.")
-                codeformer_weight = gr.Slider(0, 1, value=.8, step=.05, label="CodeFormer fidelity weight", info="Lower = more restoration, higher = keeps the swapped face structure closer to the swap output.")
+                codeformer_enabled = gr.Checkbox(value=True, label="Enable guarded CodeFormer restoration", info="Restores facial texture only when it does not reduce reference similarity.")
+                codeformer_weight = gr.Slider(0, 1, value=.9, step=.05, label="CodeFormer fidelity weight", info="Higher preserves the swapped face structure more closely.")
                 sharpen_strength = gr.Slider(0, 1, value=.5, step=.05, label="Sharpen strength", info="Single size-aware unsharp pass on the swapped face interior. Increases clarity without changing the swap model.")
             occluder_enabled = gr.Checkbox(value=True, label="Occlusion mask (XSeg)", info="Keeps hair strands, glasses and other objects in front of the face. Requires models/xseg_1.onnx (ignored if absent). Face parsing uses models/bisenet_resnet_34.onnx when present for tighter masks.")
+            mouth_mode = gr.Radio(
+                ["Swap lips, keep teeth", "Keep entire target mouth", "Swap entire mouth"],
+                value="Swap lips, keep teeth", label="Mouth handling",
+                info="Keeps the target teeth and mouth interior while using the reference lips for stronger resemblance.")
             swap = gr.Button("Run identity swap", variant="primary", interactive=init_can)
             output = gr.Gallery(
                 label="Swapped images — click any image to view full size / zoom",
@@ -324,13 +340,13 @@ def build_ui():
                 show_fullscreen_button=True,
                 show_download_button=True,
                 interactive=False,
-                elem_classes="rx-gallery",
+                elem_classes="vs-gallery",
             )
-            status = gr.Textbox(label="Pipeline report", lines=4, elem_classes="rx-status")
+            status = gr.Textbox(label="Pipeline report", lines=4, elem_classes="vs-status")
 
             def _on_recheck():
                 html, can = _check_models()
-                return html, ("✅ All models ready — press **Run identity swap** to Launch ReactorX" if can else "❌ Still missing — follow Model Setup Guide above"), gr.update(interactive=can)
+                return html, ("✅ All models ready — press **Run identity swap** to Launch Visenlo" if can else "❌ Still missing — follow Model Setup Guide above"), gr.update(interactive=can)
 
             recheck_btn.click(_on_recheck, outputs=[model_html, launch_info, swap])
 
@@ -365,22 +381,22 @@ def build_ui():
                        [targets, ref1, ref2, ref3, ref4, target_index, source_index,
                         match_mode, swapper_model, min_face_size, verify_threshold,
                         color_strength, codeformer_enabled, codeformer_weight,
-                        sharpen_strength, occluder_enabled],
+                        sharpen_strength, occluder_enabled, quality_mode, mouth_mode],
                        [output, status],
                        concurrency_limit=1)
         gr.Markdown("Every completed swap is auto-saved to `outputs/` as "
                     "`<date>_<NN>.png`. Use only images you own or have permission "
-                    "to edit. ReactorX runs locally.")
+                    "to edit. Visenlo runs locally.")
     return app
 
 
 def main():
-    parser = argparse.ArgumentParser(description="ReactorX standalone local app")
+    parser = argparse.ArgumentParser(description="Visenlo standalone local app")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=7860)
     parser.add_argument("--share", action="store_true")
     args = parser.parse_args()
-    logger.info("ReactorX Swap Engine v1")
+    logger.info("Visenlo Swap Engine v1")
     logger.info("  models dir:  %s", MODELS)
     logger.info("  server:      %s:%d", args.host, args.port)
     logger.info("  share mode:  %s", args.share)

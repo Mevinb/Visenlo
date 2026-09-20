@@ -1,12 +1,19 @@
-# ReactorX Swap Engine v1 — 100% Local
+# Visenlo Swap Engine v1 — 100% Local
 
-ReactorX is an independent **local-first** application. It does not require Stable
-Diffusion WebUI or Forge. `Reactorv4` was used as reference only and is not
-imported or modified.
+Visenlo is an independent **local-first** face-swap application. It does not
+require Stable Diffusion WebUI or Forge. `Reactorv4` was used as reference
+only and is not imported or modified.
 
-Pipeline: detect -> dense landmarks -> align -> parse -> process references ->
-aggregate identity -> swap -> CodeFormer restoration (optional) -> color match ->
-occlusion recovery -> boundary blend -> identity verification -> auto-save.
+> **Renamed:** this project was previously called **ReactorX**. Everything is
+> now **Visenlo** — folder `Visenlo/`, package `visenlo/`, env
+> `VISENLO_MODELS` / `VISENLO_REPO` / `VISENLO_ZIP`, class `VisenloPipeline`,
+> Docker service `visenlo`, dist `Visenlo-v1.zip`. Old `REACTORX_*` env vars
+> and `ReactorXPipeline` still work as aliases so existing setups don't break.
+
+Pipeline: detect → dense landmarks → align → parse → process references →
+aggregate identity → swap (**with Pixel Boost**) → CodeFormer restoration
+(optional) → color match → occlusion recovery → boundary blend → identity
+verification → auto-save.
 
 ## Quick start — automatic local install
 
@@ -21,8 +28,8 @@ All processing stays **100% on your device**. No data leaves your machine.
 
 **Option A — Git clone (recommended):**
 ```bash
-git clone https://github.com/Mevinb/Reactor-X.git
-cd ReactorX
+git clone https://github.com/Mevinb/Visenlo.git
+cd Visenlo
 python launcher.py              # cross-platform, handles .venv + deps + port automatically
 # or
 ./run.sh                        # Linux/macOS
@@ -32,7 +39,7 @@ python launcher.py              # cross-platform, handles .venv + deps + port au
 **Option B — ZIP download (no git needed):**
 - Download ZIP from GitHub: `Code → Download ZIP` or your website's Download button
 - Extract → double-click `install.bat` (Windows) or run `./install.sh` (Linux/macOS)
-- For you (maintainer) to create the ZIP: `python scripts/make_dist.py` → `dist/ReactorX-v1.zip` (2 MB, excludes `.venv`/`models/*.onnx`/`outputs`; downloader fetches deps & models on first run)
+- For you (maintainer) to create the ZIP: `python scripts/make_dist.py` → `dist/Visenlo-v1.zip` (2 MB, excludes `.venv`/`models/*.onnx`/`outputs`; downloader fetches deps & models on first run)
 
 **Option C — One-line remote install (zero files needed beforehand):**
 ```bash
@@ -40,7 +47,8 @@ python launcher.py              # cross-platform, handles .venv + deps + port au
 curl -fsSL https://YOUR_WEBSITE/install.sh | bash
 # Windows PowerShell — auto-clones repo if missing:
 irm https://YOUR_WEBSITE/install.ps1 | iex
-# Set custom repo with: REACTORX_REPO=https://github.com/Mevinb/Reactor-X.git
+# Set custom repo with: VISENLO_REPO=https://github.com/Mevinb/Visenlo.git
+# Legacy REACTORX_REPO / REACTORX_ZIP are still honored as fallback.
 ```
 > `install.sh` / `install.ps1` detect `app.py` missing → `git clone` the repo (or ZIP via `curl`/`Invoke-WebRequest` if git unavailable) → then do the same local setup as Option A.
 
@@ -69,11 +77,11 @@ User installs → re-check
     ↓
 [✓] buffalo_l   [✓] inswapper_128   [✓] BiSeNet   [✓] XSeg   [✓] CodeFormer
                           ↓
-                [Launch ReactorX]  (Run identity swap)
+                [Launch Visenlo]  (Run identity swap)
 ```
 
 ### How distribution works
-You host only a light download page/redirect. The user gets the **full** `ReactorX/` folder (app.py, reactorx/, requirements.txt, scripts/, models/ placeholder, outputs/) via one of the three options above. Everything after that runs 100% on their device — no code or images ever go to your server. The app's top **Model Setup Guide** accordion shows live checkmarks and disables *Run identity swap* until required models are present.
+You host only a light download page/redirect. The user gets the **full** `Visenlo/` folder (app.py, visenlo/, requirements.txt, scripts/, models/ placeholder, outputs/) via one of the three options above. Everything after that runs 100% on their device — no code or images ever go to your server. The app's top **Model Setup Guide** accordion shows live checkmarks and disables *Run identity swap* until required models are present.
 
 ## Swapping and saved outputs
 
@@ -105,6 +113,75 @@ full image is visible (no cropping). Interaction:
   content (`height="auto"`, no 420px cap). A dark `1a1a1a` letterbox keeps
   thumbnails readable.
 
+## Pixel Boost — explicit guide (read this)
+
+**Pixel Boost is how Visenlo gets sharp swaps out of the 128px
+`inswapper_128` model without changing identity.** The same identity embedding
+is reused — only the aligned crop resolution changes.
+
+### The 5 choices in the UI
+
+| Dropdown entry | Aligned crop | Boost factor | Tiles run | Sharpness | Relative cost |
+|---|---|---|---|---|---|
+| `inswapper_128.onnx` | 128px | x1 (native) | 1 | 1x | 1x |
+| `inswapper_128.onnx@256` | 256px | x2 | 4 | ~2x | ~4x |
+| `inswapper_128.onnx@512` | 512px | x4 | 16 | ~4x | ~16x |
+| `inswapper_128.onnx@1024` | 1024px | x8 | 64 | ~8x | ~64x |
+| `inswapper_128.onnx@2048` | 2048px | x16 | 256 | ~16x | ~256x |
+| `reswapper_256.onnx` | 256px native | — (no boost) | 1 | — | 1x |
+
+Suffix = **desired aligned resolution**. Internally `parse_swapper_spec()`
+converts it to a scale factor relative to the model's native 128px:
+`256→x2`, `512→x4`, `1024→x8`, `2048→x16`. Short forms `@2/@4/@8/@16` and
+legacy `inswapper_128@256` (auto-gains `.onnx`) resolve identically.
+
+### How it works under the hood (`visenlo/boost.py`)
+
+1. `face_align.norm_crop2(image, kps, 128*factor)` aligns a **larger** crop
+   (`big = 128 × factor`).
+2. `implode_tiles()` splits it into `factor²` whole-face views, each
+   downsampled by `factor` at sub-pixel phase offsets (polyphase
+   decomposition, FaceFusion technique). Every tile keeps the model's expected
+   128px receptive field, so there are **no seams**.
+3. Tiles run **sequentially** through `inswapper_128.onnx` (the graph declares
+   fixed batch 1) with the same source identity embedding.
+4. `explode_tiles()` interleaves the outputs back to the full `big × big` face.
+5. `_paste_back()` warps it to the frame with **Lanczos** (not bilinear) and the
+   same erode + feather mask logic as the native swapper.
+
+Input size is detected robustly for both `NCHW` and `NHWC` exports, and mask
+kernel sizes are clamped so `@2048` never crashes `cv2` on huge faces.
+
+### Explicit choice vs Best likeness (automatic)
+
+- **Explicit `@256/@512/@1024/@2048` always wins — in both quality modes.**
+  If you pick `@512`, Visenlo runs exactly x4, no comparison, no override.
+  The report says `requested pixel-boost 512px (x4)`.
+- **Plain `inswapper_128.onnx` + Best likeness (default):** Visenlo runs
+  **native, 256px, and 512px** candidates (`candidate_boosts_for() → (1, 2, 4)`),
+  each in **two finishes** (`default` + `identity-preserving` with color/sharpen
+  off) = 6 candidates. It compares fully composited outputs to the reference
+  with ArcFace, keeps the **lowest boost within 0.01** of the best score
+  (`select_likeness_candidate()`), and reports
+  `best-likeness x4 default (compared 128/256/512)`. Deliberately slower than
+  Manual — “reference similarity” is a comparison value, not a guarantee the
+  image looks convincing.
+- **Plain `inswapper_128.onnx` + Manual:** runs **native x1 only**.
+- **Pixel Boost is rejected for `reswapper_256.onnx`.** The UI suffixes are only
+  valid for `inswapper_128`; the pipeline raises
+  `Pixel-boost (@256/@512/…) is not supported for reswapper_256.onnx`.
+
+### When to use what
+
+- **Default (Best likeness, plain 128px):** leave it — best quality/effort
+  trade-off for most faces.
+- **`@256`:** visibly crisper eyes/teeth on close-ups, still fast. Good first
+  manual step up.
+- **`@512`:** large prints / 1K+ faces. Noticeably sharper, ~16 tile passes.
+- **`@1024` / `@2048`:** forensic crops / huge posters only. 64–256 tile
+  passes — use a GPU, expect seconds-to-minutes on CPU. Gains beyond `@512`
+  are subtle unless the target face itself is 800px+.
+
 ## Gender-based face matching
 
 The **Face matching** control has two modes:
@@ -133,18 +210,19 @@ face 1 of 2`).
 ## Models
 
 The local `buffalo_l` analysis pack has already been copied into
-`ReactorX/models/insightface/models/buffalo_l/` from the existing Desktop model
+`Visenlo/models/insightface/models/buffalo_l/` from the existing Desktop model
 cache, so those files will not be downloaded again. The five copied files are
 `1k3d68.onnx`, `2d106det.onnx`, `det_10g.onnx`, `genderage.onnx`, and
 `w600k_r50.onnx`.
 
 The existing Forge installation contained both models. They have been copied
-and validated at `ReactorX/models/inswapper_128.onnx` and
-`ReactorX/models/reswapper_256.onnx`. ReactorX uses the standard InsightFace
+and validated at `Visenlo/models/inswapper_128.onnx` and
+`Visenlo/models/reswapper_256.onnx`. Visenlo uses the standard InsightFace
 adapter for the 128px model and a dedicated two-input ONNX adapter for the
 256px model, because InsightFace 0.7.3 otherwise misclassifies the latter as
 an ArcFace recognition model.
-Set `REACTORX_MODELS=/another/path` to use another model directory.
+Set `VISENLO_MODELS=/another/path` to use another model directory
+(`REACTORX_MODELS` still works as a legacy fallback).
 
 ### Getting the models — Model Setup Guide
 
@@ -157,10 +235,10 @@ restrictions) and **are not auto-downloaded** (licensing). The `buffalo_l` analy
 [✓/✗] BiSeNet        — Face parsing (~90 MB)
 [✓/✗] XSeg           — Occlusion (~68 MB)
 [✓/✗] CodeFormer     — Restoration (~377 MB)
-          ↓ all ✓ → [Launch ReactorX]
+          ↓ all ✓ → [Launch Visenlo]
 ```
 
-**Install missing models** (from your `ReactorX/` folder):
+**Install missing models** (from your `Visenlo/` folder):
 
 ```bash
 BASE=https://huggingface.co/facefusion/models-3.0.0/resolve/main
@@ -179,31 +257,31 @@ python scripts/download_models.py --check   # verify — should show all ✓
 the 256px dropdown entry is unavailable. Note that `inswapper_128` and
 `reswapper_256` are InsightFace research models — non-commercial use only.
 Pixel-boost suffixes (`@256` etc.) are only valid for `inswapper_128`; the UI
-rejects them for `reswapper_256`.
+rejects them for `reswapper_256` (see Pixel Boost section above).
 
 ## CodeFormer restoration
 
-Optional face-restoration stage (default off). Requires the ONNX conversion of
-the full CodeFormer graph at `ReactorX/models/codeformer.onnx` (or
+Guarded face-restoration stage (enabled by default). Requires the ONNX conversion of
+the full CodeFormer graph at `Visenlo/models/codeformer.onnx` (or
 `models/restoration/codeformer.onnx`, ~377 MB, inputs `input [1,3,512,512]`
 and `weight` float32 scalar, output the restored 512px face).
 
-- Toggle **Enable CodeFormer restoration** in the UI.
+- Toggle **Enable guarded CodeFormer restoration** in the UI. It runs only on
+  the selected candidate and is discarded when reference similarity decreases.
 - **CodeFormer fidelity weight** (`w`, 0..1): lower = stronger restoration,
   higher = keeps the swapped face closer to the swap output. 0.8 is a good
   default; `w` near 1 preserves identity most. The weight is now fed as
   `float32` with correct scalar/`[1]` layout detection to avoid ORT type
   errors on strict builds.
-- The pipeline crops the aligned swapped face, restores it at 512px, pastes it
-  back through the same feathered blend used for the plain swap, then applies
-  color matching and occlusion recovery as usual.
-- An automatic identity check embeds the swapped and restored aligned faces with
-  the recognition model; if restoration drops reference identity noticeably it
-  is skipped for that swap. The threshold is clamped for very low similarities
-  (`max(0, 0.95×, -0.10)`) and compares embeddings at matched scale.
+- The pipeline re-aligns the selected candidate to CodeFormer's native 512px
+  FFHQ template, restores it, and pastes it through the same face mask. It
+  applies the target-preserving corrections afterward.
+- An automatic check compares the composited output with the reference identity;
+  restoration is rejected when the score falls by more than 0.01.
 
-The model is loaded once and kept in memory; it runs on the CPU at roughly 3
-seconds per face.
+The model is loaded once and kept in memory. Runtime is hardware-dependent;
+Best likeness is substantially slower on CPU because it evaluates three swaps
+(see Pixel Boost — explicit `@256/@512` candidates are compared, not just run).
 
 The engine requests InsightFace's 106-point landmark output when available and
 falls back conservatively when a runtime only exposes five points. Skin-only
@@ -213,6 +291,20 @@ This app is intended for images you own or have permission to edit.
 
 ## Quality stack
 
+- **Best likeness (default).** Runs unchanged `inswapper_128` at native, 256px,
+  and 512px pixel-boost settings (see Pixel Boost above), compares the three
+  fully composited outputs to the reference, and keeps the lowest boost within
+  0.01 of the best score. It is deliberately slower than Manual mode.
+  “Reference similarity” is an ArcFace comparison value, not a guarantee that
+  an image looks convincing. Selecting an explicit `@256`, `@512`, `@1024`, or
+  `@2048` entry always runs that exact boost in either quality mode.
+- **Mouth handling.** The default swaps the reference lips but preserves only
+  the target teeth/open-mouth interior. Choose **Keep entire target mouth** for
+  expression stability or **Swap entire mouth** when likeness matters more than
+  possible teeth artifacts. Teeth protection requires the optional parser.
+- **Scene protection.** XSeg occlusion recovery and parsed face-region masks
+  keep target hair, body, scene, and other faces out of color correction and
+  enhancement while preserving the swapper's own feathered identity blend.
 - **GPU acceleration.** The venv uses `onnxruntime-gpu` (CUDA 13 wheels are
   pulled in automatically via the `cuda,cudnn` extra). Without a GPU it falls
   back to CPU transparently. If the CUDA provider is advertised but
@@ -224,6 +316,8 @@ This app is intended for images you own or have permission to edit.
   run the 128px model on polyphase tiles of a larger aligned crop (FaceFusion
   technique), yielding 2x/4x/8x/16x sharper swaps with the same identity
   embedding. Input size is detected robustly for both `NCHW` and `NHWC` exports.
+  Full details — including tile counts, costs, and Best-likeness comparison
+  logic — are in **Pixel Boost — explicit guide** above.
 - **Face parsing (BiSeNet).** When `models/bisenet_resnet_34.onnx` is present,
   color matching and sharpening use a skin/feature interior mask derived from
   CelebAMask-HQ parsing instead of a geometric ellipse, so hair and background

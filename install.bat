@@ -1,5 +1,5 @@
 @echo off
-REM ReactorX — One-shot local installer for Windows (CMD)
+REM Visenlo — One-shot local installer for Windows (CMD)
 REM Usage: double-click install.bat  OR  install.bat --port 7860
 REM For PowerShell users, prefer install.ps1
 
@@ -7,7 +7,7 @@ setlocal EnableDelayedExpansion
 set ROOT=%~dp0
 if not exist "%ROOT%app.py" set ROOT=%CD%\
 
-echo [ReactorX] Windows CMD installer — checking Python...
+echo [Visenlo] Windows CMD installer — checking Python...
 
 python --version >nul 2>&1
 if %errorlevel% neq 0 (
@@ -22,7 +22,7 @@ for /f "tokens=2" %%v in ('python -c "import sys; print(f'{sys.version_info.majo
 echo [ok] Found Python %PYVER%
 
 if not exist "%ROOT%.venv" (
-  echo [ReactorX] Creating virtual environment...
+  echo [Visenlo] Creating virtual environment...
   python -m venv "%ROOT%.venv"
   if errorlevel 1 (
     echo [fail] Could not create venv. Try: python -m pip install --upgrade pip
@@ -39,7 +39,7 @@ if not exist "%ROOT%.venv\Scripts\python.exe" (
   exit /b 1
 )
 
-echo [ReactorX] Installing dependencies (2-5 min first time)...
+echo [Visenlo] Installing dependencies (2-5 min first time)...
 "%ROOT%.venv\Scripts\python.exe" -m pip install --upgrade pip -q
 "%ROOT%.venv\Scripts\python.exe" -m pip uninstall -y onnxruntime opencv-python >nul 2>&1
 "%ROOT%.venv\Scripts\python.exe" -m pip install -r "%ROOT%requirements.txt"
@@ -55,12 +55,12 @@ if exist "%ROOT%scripts\download_models.py" (
 )
 
 if exist "%ROOT%scripts\selfcheck.py" (
-  echo [ReactorX] Running self-check...
+  echo [Visenlo] Running self-check...
   "%ROOT%.venv\Scripts\python.exe" "%ROOT%scripts\selfcheck.py"
 )
 
 echo.
-echo   ReactorX will open at http://127.0.0.1:7860
+echo   Visenlo will open at http://127.0.0.1:7860
 echo   All processing stays 100%% on your device.
 echo.
 

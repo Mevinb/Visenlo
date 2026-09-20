@@ -1,4 +1,4 @@
-"""Model-independent stages used by ReactorX Swap Engine v1."""
+"""Model-independent stages used by Visenlo Swap Engine v1."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import cv2
 import numpy as np
 
-logger = logging.getLogger("reactorx.engine")
+logger = logging.getLogger("visenlo.engine")
 
 
 @dataclass
@@ -82,6 +82,7 @@ def fallback_masks(shape):
     _ellipse(masks["eyebrows"], (w * .5, h * .28), (w * .30, h * .05))
     _ellipse(masks["nose"], (w * .5, h * .52), (w * .13, h * .19))
     _ellipse(masks["lips"], (w * .5, h * .72), (w * .20, h * .09))
+    _ellipse(masks["teeth"], (w * .5, h * .72), (w * .12, h * .045))
     masks["background"] = 1.0 - np.clip(masks["skin"] + masks["hair"], 0, 1)
     for name in masks:
         masks[name] = cv2.GaussianBlur(masks[name], (0, 0), max(1.0, min(h, w) * .012))
@@ -188,9 +189,10 @@ def parse_face(image, record: FaceRecord, parser=None):
         try:
             labels = parser(crop)
             # CelebAMask-HQ label ids: 1 skin, 2/3 brows, 4/5 eyes, 6 glasses,
-            # 7/8 ears, 10 nose, 12/13 lips, 14 neck, 17 hair, 18 hat.
+            # 7/8 ears, 10 nose, 11 teeth (open-mouth interior), 12/13 lips,
+            # 14 neck, 17 hair, 18 hat.
             ids = {"skin": [1], "eyes": [4, 5], "eyebrows": [2, 3], "nose": [10],
-                   "lips": [12, 13], "neck": [14], "hair": [17], "ear": [7, 8],
+                   "lips": [12, 13], "teeth": [11], "neck": [14], "hair": [17], "ear": [7, 8],
                    "glasses": [6], "hat": [18]}
             masks = {name: np.zeros(labels.shape, np.float32) for name in MASK_NAMES}
             for name, values in ids.items():
@@ -208,9 +210,18 @@ def parse_face(image, record: FaceRecord, parser=None):
 
 
 def weighted_identity(records: list[FaceRecord]) -> np.ndarray:
+    """Return a unit reference identity vector.
+
+    A single usable reference reaches the swapper unchanged apart from the
+    required normalization. Averaging only applies to deliberate multi-photo
+    reference sets.
+    """
     usable = [record for record in records if record.embedding is not None and record.quality > 0]
     if not usable:
         raise RuntimeError("No usable reference face embeddings")
+    if len(usable) == 1:
+        vector = np.asarray(usable[0].embedding, np.float32)
+        return vector / max(np.linalg.norm(vector), 1e-8)
     vectors = np.asarray([record.embedding for record in usable], np.float32)
     weights = np.asarray([max(record.quality, .05) for record in usable], np.float32)
     vector = (vectors * (weights / weights.sum())[:, None]).sum(axis=0)
@@ -269,7 +280,9 @@ def color_match(swapped, target, mask, strength=.75):
         plane = lab_s[:, :, channel]
         source_values = plane[active]
         target_values = lab_t[:, :, channel][active]
-        ratio = 1 + (target_values.std() / max(source_values.std(), 1e-3) - 1) * strength
+        raw_ratio = target_values.std() / max(source_values.std(), 1e-3)
+        # Flat or clipped regions otherwise cause huge LAB contrast swings.
+        ratio = 1 + (np.clip(raw_ratio, .67, 1.50) - 1) * strength
         plane = (plane - source_values.mean()) * ratio + (
             source_values.mean() + (target_values.mean() - source_values.mean()) * strength
         )

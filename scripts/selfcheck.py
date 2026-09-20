@@ -1,4 +1,4 @@
-"""Static + unit self-check for ReactorX quality upgrades.
+"""Static + unit self-check for Visenlo quality upgrades.
 
 Run with the project venv: .venv/bin/python scripts/selfcheck.py
 Uses synthetic data only - no real faces or model weights required
@@ -29,8 +29,8 @@ def check(name, condition, detail=""):
 def main():
     import cv2
 
-    from reactorx.boost import explode_tiles, implode_tiles
-    from reactorx.engine import (
+    from visenlo.boost import explode_tiles, implode_tiles
+    from visenlo.engine import (
         MASK_NAMES,
         build_face_mask,
         color_match,
@@ -42,13 +42,15 @@ def main():
         soften_mask,
         weighted_identity,
     )
-    from reactorx.pipeline import (
+    from visenlo.pipeline import (
         PipelineConfig,
-        ReactorXPipeline,
+        VisenloPipeline,
         allocate_output_path,
         arcface_kps,
+        candidate_boosts_for,
         gender_label,
         parse_swapper_spec,
+        select_likeness_candidate,
         select_target_record,
         source_gender_vote,
     )
@@ -110,6 +112,13 @@ def main():
     check("color_match returns float32", same.dtype == np.float32)
     check("color_match no-op at strength 0",
           np.array_equal(color_match(img, np.flip(img, 1).copy(), m, 0), img.astype(np.float32)))
+    # A nearly flat swap must not acquire an extreme contrast jump from a
+    # high-variance target (the ratio is intentionally bounded in engine.py).
+    flat = np.full((32, 32, 3), 120, np.uint8)
+    high_var = rng.integers(0, 256, (32, 32, 3), dtype=np.uint8)
+    bounded = color_match(flat, high_var, np.ones((32, 32), np.float32), 1.0)
+    check("color_match bounds flat-region contrast",
+          bool(np.all(bounded == bounded[0, 0])))
 
     # --- occlusion recovery is bounded by sensitivity ---
     target = np.full((64, 64, 3), 10, np.uint8)
@@ -148,6 +157,35 @@ def main():
     check("composite_region_mask returns None without planes",
           composite_region_mask(empty, (40, 40), ("skin",)) is None)
 
+    # --- teeth handling (target mouth must survive the swap) ---
+    teeth_labels = np.full((40, 40), 1, np.int32)  # skin everywhere
+    teeth_labels[24:30, 14:26] = 11  # open-mouth teeth
+    teeth_labels[22:32, 12:28] = np.where(teeth_labels[22:32, 12:28] == 1, 12,
+                                          teeth_labels[22:32, 12:28])  # lips ring
+
+    class _MouthParser:
+        def __call__(self, crop):
+            return teeth_labels
+
+    rec3 = SimpleNamespace(bbox=(0, 0, 40, 40))
+    parse_face(np.zeros((40, 40, 3), np.uint8), rec3, _MouthParser())
+    check("teeth parsed from CelebAMask id 11",
+          float(rec3.masks["teeth"][24:30, 14:26].max()) == 1.0)
+    check("fallback masks include teeth",
+          float(rec.masks["teeth"].max()) > 0)
+    mouth = composite_region_mask(rec3, (40, 40), ("lips", "teeth"),
+                                  dilate_frac=.01, feather_frac=.015)
+    check("mouth mask covers teeth",
+          mouth is not None and float(mouth[24:30, 14:26].max()) > 0.5)
+    # Mouth paste-back keeps target pixels exactly where the mask is hard.
+    _tgt = np.full((40, 40, 3), 10, np.uint8)
+    _res = np.full((40, 40, 3), 200, np.uint8)
+    _hard = (mouth > 0.9).astype(np.float32)[:, :, None]
+    _blend = (_res.astype(np.float32) * (1 - _hard) +
+              _tgt.astype(np.float32) * _hard).astype(np.uint8)
+    check("mouth paste keeps target teeth",
+          int(_blend[27, 20, 0]) == 10 and int(_blend[5, 5, 0]) == 200)
+
     # --- quality score behavior ---
     def make_record(sharp_img, kps):
         face = SimpleNamespace(kps=kps, bbox=None)
@@ -174,9 +212,11 @@ def main():
     r_lo = SimpleNamespace(embedding=e2, quality=.1)
     agg = weighted_identity([r_hi, r_lo])
     check("identity aggregation dominated by high-quality ref", agg[0] > agg[1])
+    single = weighted_identity([r_hi])
+    check("single reference identity is preserved", np.allclose(single, e1))
 
     # --- gender-based target selection ---
-    from reactorx.engine import FaceRecord
+    from visenlo.engine import FaceRecord
 
     def gface(gender):
         rec = FaceRecord(face=None, bbox=(0, 0, 10, 10),
@@ -221,6 +261,8 @@ def main():
     check("occluder enabled by default", cfg.occluder_enabled)
     check("det_size ceiling configured", cfg.det_size_max >= cfg.det_size)
     check("swap auto-save enabled by default", cfg.save_swaps)
+    check("best likeness is the default quality mode", cfg.quality_mode == "best_likeness")
+    check("default mouth mode keeps target teeth", cfg.mouth_mode == "swap_lips_keep_teeth")
 
     # --- auto-save output naming (date + zero-padded counter) ---
     import tempfile
@@ -248,9 +290,33 @@ def main():
           parse_swapper_spec("inswapper_128.onnx@1024") == ("inswapper_128.onnx", 8))
     check("boost 2048 resolves to factor 16",
           parse_swapper_spec("inswapper_128.onnx@2048") == ("inswapper_128.onnx", 16))
+    for size, factor in ((256, 2), (512, 4), (1024, 8), (2048, 16)):
+        name = f"inswapper_128.onnx@{size}"
+        model, parsed = parse_swapper_spec(name)
+        check(f"explicit {size}px boost wins in Best likeness",
+              candidate_boosts_for(name, model, parsed, "best_likeness") == (factor,))
+        check(f"explicit {size}px boost wins in Manual",
+              candidate_boosts_for(name, model, parsed, "manual") == (factor,))
+    check("plain Best likeness compares native, 256 and 512",
+          candidate_boosts_for("inswapper_128.onnx", "inswapper_128.onnx", 1,
+                               "best_likeness") == (1, 2, 4))
+    check("plain Manual runs native resolution",
+          candidate_boosts_for("inswapper_128.onnx", "inswapper_128.onnx", 1,
+                               "manual") == (1,))
+    probe = np.zeros((1, 1, 3), np.uint8)
+    chosen = select_likeness_candidate([
+        (1, "default", probe, .810, .812),
+        (1, "identity-preserving", probe, .817, .819),
+    ])
+    check("default finish wins within likeness tolerance", chosen[1] == "default")
+    chosen = select_likeness_candidate([
+        (2, "default", probe, .810, .812),
+        (1, "identity-preserving", probe, .830, .831),
+    ])
+    check("identity-preserving finish wins meaningful likeness gain", chosen[1] == "identity-preserving")
 
     # --- pipeline object constructs without loading models ---
-    pipe = ReactorXPipeline(str(ROOT / "models"), cfg)
+    pipe = VisenloPipeline(str(ROOT / "models"), cfg)
     new_cfg = PipelineConfig(color_strength=.5)
     pipe.update_config(new_cfg)
     check("update_config swaps atomically", pipe.config.color_strength == .5)
@@ -263,7 +329,7 @@ def main():
     xseg_path = ROOT / "models" / "xseg_1.onnx"
     codeformer_path = ROOT / "models" / "codeformer.onnx"
     if bisenet_path.is_file():
-        from reactorx.parsing import BisenetParser
+        from visenlo.parsing import BisenetParser
         parser = BisenetParser(str(bisenet_path))
         out_labels = parser(np.zeros((100, 120, 3), np.uint8))
         check("bisenet parser output shape", out_labels.shape == (100, 120)
@@ -271,7 +337,7 @@ def main():
     else:
         print("[skip] bisenet model not present")
     if xseg_path.is_file():
-        from reactorx.parsing import XSegOccluder, aligned_crop_matrix
+        from visenlo.parsing import XSegOccluder, aligned_crop_matrix
         occ = XSegOccluder(str(xseg_path))
         ffhq_like = np.array([[.3769, .4686], [.6229, .4691], [.5012, .6133],
                               [.3931, .7254], [.6115, .7249]], np.float32) * 300 \
@@ -298,7 +364,7 @@ def main():
     else:
         print("[skip] xseg model not present")
     if codeformer_path.is_file():
-        from reactorx.restoration import CodeFormer
+        from visenlo.restoration import CodeFormer
         restorer = CodeFormer(str(ROOT / "models"))
         synthetic_face = rng.integers(0, 255, (512, 512, 3), dtype=np.uint8)
         restored = restorer.restore_aligned(synthetic_face)
