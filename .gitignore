@@ -9,6 +9,7 @@ dist/
 
 # ---------- Virtual environments ----------
 .venv/
+.venvs/
 venv/
 env/
 .python-version
@@ -31,8 +32,21 @@ models/
 *.ckpt
 *.safetensors
 
-# ---------- Test data ----------
+# ---------- Test data (private photos) ----------
 testdata/
+test_images/
+
+# ---------- Local scratch scripts with machine-specific paths ----------
+scripts/check_all_targets.py
+scripts/diagnose_face.py
+scripts/inspect_results.py
+scripts/summarize_metrics.py
+scripts/test_pipeline_stages.py
+scripts/test_xseg.py
+
+# ---------- Identity bank / presets (derived from private photos) ----------
+*.npz
+identities/
 
 # ---------- App runtime artifacts (contain YOUR images) ----------
 # Gradio caches uploads/flagged outputs here.

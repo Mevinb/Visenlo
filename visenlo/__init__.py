@@ -1,5 +1,15 @@
 """Public API for the Visenlo engine."""
 
-from .pipeline import PipelineConfig, ReactorXPipeline, VisenloPipeline
+from .pipeline import (
+    FaceAssignment,
+    FaceReport,
+    PipelineConfig,
+    ReactorXPipeline,
+    ReferenceSet,
+    SwapCancelled,
+    SwapOutput,
+    VisenloPipeline,
+)
 
-__all__ = ["PipelineConfig", "VisenloPipeline", "ReactorXPipeline"]
+__all__ = ["PipelineConfig", "VisenloPipeline", "ReactorXPipeline", "FaceAssignment",
+           "ReferenceSet", "SwapOutput", "FaceReport", "SwapCancelled"]

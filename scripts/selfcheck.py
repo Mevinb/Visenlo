@@ -186,6 +186,22 @@ def main():
     check("mouth paste keeps target teeth",
           int(_blend[27, 20, 0]) == 10 and int(_blend[5, 5, 0]) == 200)
 
+    # A parser that exists but fails must not pass invented geometric teeth
+    # into the mouth-preservation stage.
+    class _BrokenParser:
+        def __call__(self, crop):
+            raise RuntimeError("unavailable parser")
+
+    rec_bad = SimpleNamespace(bbox=(0, 0, 40, 40), landmarks=None)
+    parse_face(_tgt, rec_bad, _BrokenParser())
+    probe_pipe = VisenloPipeline(str(ROOT / "models"))
+    probe_pipe._parser = _BrokenParser()
+    no_cosmetics = PipelineConfig(color_strength=0, sharpen_strength=0,
+                                  occluder_enabled=False, codeformer_enabled=False)
+    untouched = probe_pipe._postprocess(_res, _tgt, rec_bad, no_cosmetics)
+    check("failed parser never invents a preserved mouth",
+          not rec_bad.parsing_available and np.array_equal(untouched, _res))
+
     # --- quality score behavior ---
     def make_record(sharp_img, kps):
         face = SimpleNamespace(kps=kps, bbox=None)
@@ -323,6 +339,13 @@ def main():
     check("outputs directory sits beside the project root",
           Path(pipe.output_dir).resolve() == (ROOT / "outputs").resolve(),
           f"output_dir={pipe.output_dir}")
+    for invalid_target in (None, np.zeros((8, 8), np.uint8), np.zeros((8, 8, 3), np.float32)):
+        try:
+            pipe.process([np.zeros((8, 8, 3), np.uint8)], invalid_target)
+        except ValueError:
+            check("invalid input rejected before model load", pipe._analysis is None)
+        else:
+            check("invalid input rejected before model load", False)
 
     # --- model adapters load and run when present ---
     bisenet_path = ROOT / "models" / "bisenet_resnet_34.onnx"
@@ -360,6 +383,16 @@ def main():
         polarity_probe.output_name = "output"
         occ = polarity_probe.detect(np.zeros((256, 256, 3), np.uint8))
         check("xseg face keep mask is inverted to occlusion",
+              occ.shape == (256, 256) and float(occ.max()) == 0.0)
+        class _NchwKeepMaskSession:
+            def run(self, names, feed):
+                assert feed["input"].shape == (1, 3, 256, 256)
+                return [np.ones((1, 1, 256, 256), np.float32)]
+
+        polarity_probe.session = _NchwKeepMaskSession()
+        polarity_probe.nchw = True
+        occ = polarity_probe.detect(np.zeros((256, 256, 3), np.uint8))
+        check("xseg NCHW export receives NCHW input",
               occ.shape == (256, 256) and float(occ.max()) == 0.0)
     else:
         print("[skip] xseg model not present")

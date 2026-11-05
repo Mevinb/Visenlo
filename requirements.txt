@@ -2,6 +2,7 @@ numpy>=1.24,<3
 opencv-python-headless>=4.8,<5
 scikit-image>=0.22,<2
 Pillow>=10
-gradio>=4.44,<6
+gradio>=5.50,<6
 insightface==0.7.3
-onnxruntime-gpu>=1.19
+onnxruntime-gpu>=1.19; platform_system != "Darwin"
+onnxruntime>=1.19; platform_system == "Darwin"

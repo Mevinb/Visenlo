@@ -30,7 +30,9 @@ ROOT = Path(__file__).resolve().parent
 VENV = ROOT / ".venv"
 IS_WIN = sys.platform.startswith("win")
 VENV_PY = VENV / ("Scripts/python.exe" if IS_WIN else "bin/python")
-REQ = ROOT / "requirements.txt"
+REQ = ROOT / "requirements.txt"          # CPU runtime
+REQ_GPU = ROOT / "requirements-gpu.txt"  # NVIDIA runtime (same packages + onnxruntime-gpu)
+REQ_BASE = ROOT / "requirements-base.txt"
 APP = ROOT / "app.py"
 
 GREEN = "\033[92m"
@@ -87,25 +89,46 @@ def has_nvidia_gpu() -> bool:
         return True
     return False
 
+def dependencies_ready() -> bool:
+    """Keep an already-working install usable without network access.
+
+    Only the shared package set is version-checked; either onnxruntime build
+    (CPU or GPU) counts as satisfying the runtime requirement.
+    """
+    code = '''
+import importlib
+from importlib.metadata import version
+from packaging.requirements import Requirement
+from pathlib import Path
+for module in ("numpy", "cv2", "skimage", "PIL", "gradio", "insightface", "onnxruntime", "onnx"):
+    importlib.import_module(module)
+for line in Path(__import__("sys").argv[1]).read_text().splitlines():
+    line = line.strip()
+    if not line or line.startswith("#") or line.startswith("-r"):
+        continue
+    req = Requirement(line)
+    if req.marker and not req.marker.evaluate():
+        continue
+    installed = version(req.name)
+    if installed not in req.specifier:
+        raise RuntimeError(f"{req.name} {installed} does not satisfy {req.specifier}")
+'''
+    base = REQ_BASE if REQ_BASE.exists() else REQ
+    return subprocess.call([str(VENV_PY), "-c", code, str(base)],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0
+
+
 def pip_install():
     info("Installing dependencies (2-5 min first time) ...")
-    # remove conflicting wheels
-    subprocess.call([str(VENV_PY), "-m", "pip", "uninstall", "-y", "onnxruntime", "onnxruntime-gpu", "opencv-python"],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     subprocess.check_call([str(VENV_PY), "-m", "pip", "install", "--upgrade", "pip", "-q"])
-    gpu = has_nvidia_gpu()
+    gpu = has_nvidia_gpu() and REQ_GPU.exists()
     if gpu:
-        info("  GPU detected — installing onnxruntime-gpu (will fallback to CPU if CUDA libs missing)...")
+        info("  NVIDIA GPU detected — installing requirements-gpu.txt (falls back to CPU if CUDA libs are missing)...")
         try:
-            subprocess.check_call([str(VENV_PY), "-m", "pip", "install", "-q", "-r", str(REQ)])
+            subprocess.check_call([str(VENV_PY), "-m", "pip", "install", "-q", "-r", str(REQ_GPU)])
         except subprocess.CalledProcessError:
-            warn("GPU install failed, falling back to CPU")
-            # rewrite req to cpu
-            txt = REQ.read_text().replace("onnxruntime-gpu", "onnxruntime")
-            tmp = ROOT / ".tmp_req_cpu.txt"
-            tmp.write_text(txt)
-            subprocess.check_call([str(VENV_PY), "-m", "pip", "install", "-q", "-r", str(tmp)])
-            tmp.unlink(missing_ok=True)
+            warn("GPU install failed, falling back to the CPU runtime")
+            subprocess.check_call([str(VENV_PY), "-m", "pip", "install", "-q", "-r", str(REQ)])
         # verify CUDA actually usable
         ret = subprocess.call([str(VENV_PY), "-c", "import onnxruntime as ort; exit(0 if 'CUDAExecutionProvider' in ort.get_available_providers() else 1)"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if ret != 0:
@@ -113,17 +136,13 @@ def pip_install():
         else:
             ok("CUDA provider available")
     else:
-        info("  No GPU detected — installing CPU build (onnxruntime)...")
-        txt = REQ.read_text().replace("onnxruntime-gpu", "onnxruntime")
-        tmp = ROOT / ".tmp_req_cpu.txt"
-        tmp.write_text(txt)
-        subprocess.check_call([str(VENV_PY), "-m", "pip", "install", "-q", "-r", str(tmp)])
-        tmp.unlink(missing_ok=True)
+        info("  No NVIDIA GPU detected — installing the CPU runtime (requirements.txt)...")
+        subprocess.check_call([str(VENV_PY), "-m", "pip", "install", "-q", "-r", str(REQ)])
     ok("Dependencies installed")
 
 
 def find_free_port(host: str, start: int) -> int:
-    for port in range(start, start + 50):
+    for port in range(start, min(start + 50, 65536)):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
@@ -153,30 +172,17 @@ except: pass
 
 def model_check():
     helper = ROOT / "scripts" / "download_models.py"
-    if helper.exists():
-        ret = subprocess.call([str(VENV_PY), str(helper), "--check"])
-        if ret != 0:
-            warn("Some models missing — follow Model Setup Guide (no auto-download, licensing)")
-            print("  Guide:")
-            print("    BASE=https://huggingface.co/facefusion/models-3.0.0/resolve/main")
-            print("    curl -L -o models/inswapper_128.onnx  $BASE/inswapper_128.onnx")
-            print("    curl -L -o models/bisenet_resnet_34.onnx $BASE/bisenet_resnet_34.onnx")
-            print("    curl -L -o models/codeformer.onnx $BASE/codeformer.onnx")
-            print("    curl -L -o models/xseg_1.onnx https://huggingface.co/facefusion/models-3.1.0/resolve/main/xseg_1.onnx")
-            print("  Then re-run: python scripts/download_models.py --check")
-            print("  Or auto (if you accept licenses): python scripts/download_models.py --download")
-            print("  buffalo_l auto-downloads on first swap")
-            # verify critical
-            if not (ROOT / "models" / "inswapper_128.onnx").exists():
-                warn("CRITICAL: inswapper_128.onnx still missing — swaps will fail until installed")
-            print("\n  Once you see: [✓] buffalo_l [✓] inswapper_128 [✓] BiSeNet [✓] XSeg [✓] CodeFormer -> [Launch Visenlo]")
-        else:
-            ok("All models ready — [Launch Visenlo]")
+    if not helper.exists():
+        warn("Model checker is missing; use the application's Model setup panel")
+        return
+    ret = subprocess.call([str(VENV_PY), str(helper), "--check"])
+    if ret:
+        warn("Required local models are missing — open Model setup for instructions")
+        print("  Models are never downloaded automatically during a swap.")
+        print("  In the local app, open Model setup, review the model licenses,")
+        print("  acknowledge the terms, and choose Install required models.")
     else:
-        for rel in ["models/inswapper_128.onnx", "models/insightface/models/buffalo_l/det_10g.onnx"]:
-            p = ROOT / rel
-            if p.exists(): ok(f"found {rel}")
-            else: warn(f"missing {rel} (see README Model Setup Guide)")
+        ok("Required local models ready")
 
 
 def selfcheck():
@@ -194,8 +200,14 @@ def main():
     parser.add_argument("--port", type=int, default=7860, help="Preferred port (default 7860)")
     parser.add_argument("--share", action="store_true", help="Create temporary public Gradio link")
     parser.add_argument("--skip-install", action="store_true", help="Skip pip install (use existing venv as-is)")
-    parser.add_argument("--skip-check", action="store_true", help="Skip system/model/self checks")
+    parser.add_argument("--reinstall", action="store_true", help="Re-run dependency installation even when the current environment is ready")
+    parser.add_argument("--skip-check", action="store_true", help="Skip startup system and model checks")
+    parser.add_argument("--self-check", action="store_true", help="Run the extended diagnostic suite before launch")
+    parser.add_argument("--no-browser", action="store_true", help="Start the server without opening a browser")
+    parser.add_argument("--auth", help="user:password login for the studio (use with --host 0.0.0.0 or --share)")
     args = parser.parse_args()
+    if not 1 <= args.port <= 65535:
+        parser.error("--port must be between 1 and 65535")
 
     print(f"\n{CYAN}Visenlo — 100% local face-swap engine{NC}")
     print(f"  All processing stays on your device. No images leave your machine.\n")
@@ -203,10 +215,14 @@ def main():
     check_python()
     ensure_venv()
     if not args.skip_install:
-        pip_install()
+        if not args.reinstall and dependencies_ready():
+            ok("Existing dependencies ready — no download or reinstall needed")
+        else:
+            pip_install()
     if not args.skip_check:
         system_check()
         model_check()
+    if args.self_check:
         selfcheck()
 
     port = find_free_port(args.host, args.port)
@@ -220,9 +236,25 @@ def main():
     cmd = [str(VENV_PY), str(APP), "--host", args.host, "--port", str(port)]
     if args.share:
         cmd.append("--share")
+    if args.no_browser:
+        cmd.append("--no-browser")
+    if args.auth:
+        cmd += ["--auth", args.auth]
+    # Preserve startup instructions even when stdout is piped.
+    sys.stdout.flush()
+    sys.stderr.flush()
     # Replace current process
     os.execv(str(VENV_PY), cmd)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except subprocess.CalledProcessError as exc:
+        fail(f"Setup did not complete (exit {exc.returncode}). See the installation error above.")
+        print("  Use Python 3.11 or 3.12 and install the C++ build tools required by InsightFace.")
+        print("  Keep this terminal open, fix the reported issue, then run the same run script again.")
+        sys.exit(exc.returncode or 1)
+    except KeyboardInterrupt:
+        print("\nVisenlo stopped.")
+        sys.exit(130)

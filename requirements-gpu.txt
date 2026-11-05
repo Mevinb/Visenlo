@@ -1,0 +1,4 @@
+-r requirements-base.txt
+# NVIDIA CUDA runtime (needs matching driver; CUDA/cuDNN wheels are pulled via preload_dlls).
+onnxruntime-gpu>=1.19; platform_system != "Darwin"
+onnxruntime>=1.19; platform_system == "Darwin"

@@ -12,6 +12,8 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
+from .runtime import create_session
+
 IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], np.float32)
 IMAGENET_STD = np.array([0.229, 0.224, 0.225], np.float32)
 
@@ -50,8 +52,7 @@ class BisenetParser:
     """Callable: BGR face crop -> int label map (CelebAMask-HQ classes)."""
 
     def __init__(self, model_path: str, providers=None):
-        import onnxruntime as ort
-        self.session = ort.InferenceSession(model_path, providers=providers)
+        self.session = create_session(model_path, providers)
         inp = self.session.get_inputs()[0]
         self.input_name = inp.name
         self.output_name = self.session.get_outputs()[0].name
@@ -84,12 +85,12 @@ class XSegOccluder:
     """Callable-ish occlusion detector producing full-frame occluder masks."""
 
     def __init__(self, model_path: str, providers=None):
-        import onnxruntime as ort
-        self.session = ort.InferenceSession(model_path, providers=providers)
+        self.session = create_session(model_path, providers)
         inp = self.session.get_inputs()[0]
         self.input_name = inp.name
         self.output_name = self.session.get_outputs()[0].name
         shape = inp.shape
+        self.nchw = len(shape) == 4 and shape[1] == 3
         size = 256
         if len(shape) == 4:
             # Handle both NHWC (1,H,W,3) and NCHW (1,3,H,W); skip channel dim (3).
@@ -115,6 +116,8 @@ class XSegOccluder:
     def detect(self, crop: np.ndarray) -> np.ndarray:
         img = cv2.resize(crop, (self.size, self.size), interpolation=cv2.INTER_LINEAR)
         blob = (img[:, :, ::-1].astype(np.float32) / 255.0)[None]
+        if getattr(self, "nchw", False):
+            blob = np.ascontiguousarray(blob.transpose(0, 3, 1, 2))
         out = self.session.run([self.output_name], {self.input_name: blob})[0]
         # squeeze() handles both NCHW (1,1,H,W) and NHWC (1,H,W,1) exports;
         # anything else would silently mis-index under [0]-stripping.

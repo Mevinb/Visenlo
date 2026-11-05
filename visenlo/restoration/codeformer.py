@@ -1,41 +1,21 @@
-"""CodeFormer restoration facade for the Visenlo pipeline."""
+"""CodeFormer restoration facade (kept for backwards compatibility).
+
+New code should use `FaceRestorer(models_path, key)` from `.restorers`.
+"""
 
 from __future__ import annotations
 
-import os
-
 import numpy as np
 
-from .model import CodeFormerModel
+from .restorers import FaceRestorer
 from .utils import paste_restored_back
 
 
-class CodeFormer:
-    """Single-instance face restorer. Loaded lazily once and reused across swaps."""
+class CodeFormer(FaceRestorer):
+    """Single-instance CodeFormer restorer. Loaded lazily once and reused across swaps."""
 
     def __init__(self, models_path: str, providers=None, weight: float = 0.8):
-        self.models_path = models_path
-        self.providers = providers
-        self.weight = float(weight)
-        self._model = None
-        self._model_path = None
-
-    def _ensure_model(self):
-        if self._model is not None:
-            return
-        candidates = [os.path.join(self.models_path, "codeformer.onnx"),
-                      os.path.join(self.models_path, "restoration", "codeformer.onnx")]
-        path = next((candidate for candidate in candidates if os.path.isfile(candidate)), None)
-        if path is None:
-            raise FileNotFoundError(
-                f"Place codeformer.onnx in {self.models_path} to use face restoration")
-        self._model = CodeFormerModel(path, self.providers)
-        self._model_path = path
-
-    def restore_aligned(self, swapped_crop: np.ndarray) -> np.ndarray:
-        """Restore an aligned swapped face crop. Returns a 512x512 BGR restored face."""
-        self._ensure_model()
-        return self._model.restore(swapped_crop, self.weight)
+        super().__init__(models_path, "codeformer", providers, weight)
 
     def enhance(self, swapped_crop: np.ndarray, swap_matrix: np.ndarray,
                 swap_size: int, target: np.ndarray, landmarks=None) -> np.ndarray:

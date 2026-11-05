@@ -1,0 +1,18 @@
+# Send only the application source needed by Dockerfile. Model weights,
+# environments, uploads, outputs, test photographs, credentials and Git history
+# never enter the Docker build context.
+*
+!Dockerfile
+!.dockerignore
+!requirements.txt
+!requirements-base.txt
+!app.py
+!app.css
+!visenlo/
+!visenlo/**
+!scripts/
+!scripts/**
+**/__pycache__/
+**/*.py[cod]
+**/.env*
+**/*.log

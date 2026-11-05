@@ -205,6 +205,7 @@ def parse_face(image, record: FaceRecord, parser=None):
         except Exception as exc:
             logger.warning("face parsing failed (%s); using geometric masks", exc)
             masks = None
+    record.parsing_available = masks is not None
     record.masks = masks if masks is not None else fallback_masks(crop.shape)
     return record
 
@@ -294,6 +295,144 @@ def color_match(swapped, target, mask, strength=.75):
 def cosine(a, b):
     a, b = np.asarray(a), np.asarray(b)
     return float(np.dot(a, b) / max(np.linalg.norm(a) * np.linalg.norm(b), 1e-8))
+
+
+# insightface 2d106 layout (verified against SCRFD's 5 keypoints on real
+# faces): image-left eye contour 33..42, image-right eye contour 87..96,
+# mouth corners 52 (left) and 61 (right). Nose tip stays with the detector.
+_L106_LEFT_EYE = slice(33, 43)
+_L106_RIGHT_EYE = slice(87, 97)
+_L106_MOUTH_LEFT = 52
+_L106_MOUTH_RIGHT = 61
+
+
+def refine_kps(kps, landmarks, max_shift=.15):
+    """Stabilise the 5 alignment points with the dense 106-point landmarks.
+
+    Eye centres become the centroid of the eye contour (much steadier than a
+    single regressed point); mouth corners come from the contour corners. Each
+    refined point must stay within `max_shift` of the inter-ocular distance
+    from the detector's point, otherwise that point is left untouched.
+    """
+    kps = np.asarray(kps, np.float32).reshape(-1, 2)
+    if kps.shape[0] != 5 or landmarks is None:
+        return kps
+    pts = np.asarray(landmarks, np.float32).reshape(-1, 2)
+    if pts.shape[0] != 106:
+        return kps
+    refined = kps.copy()
+    proposals = {
+        0: pts[_L106_LEFT_EYE].mean(axis=0),
+        1: pts[_L106_RIGHT_EYE].mean(axis=0),
+        3: pts[_L106_MOUTH_LEFT],
+        4: pts[_L106_MOUTH_RIGHT],
+    }
+    scale = max(float(np.linalg.norm(kps[1] - kps[0])), 1.0)
+    for index, point in proposals.items():
+        if np.isfinite(point).all() and np.linalg.norm(point - kps[index]) <= scale * max_shift:
+            refined[index] = point
+    return refined
+
+
+def sharpness(crop) -> float:
+    """Resolution-normalised Laplacian variance of a BGR crop (higher = sharper)."""
+    if crop is None or crop.size == 0:
+        return 0.0
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if crop.ndim == 3 else crop
+    if gray.shape[0] != 256 or gray.shape[1] != 256:
+        gray = cv2.resize(gray, (256, 256), interpolation=cv2.INTER_AREA)
+    return float(cv2.Laplacian(gray, cv2.CV_32F).var())
+
+
+def laplacian_blend(foreground, background, mask, levels=4):
+    """Multi-band (Laplacian pyramid) blend of `foreground` over `background`.
+
+    `mask` is float32 [0,1] with the same height/width. Low frequencies are
+    blended over a wide region and high frequencies over a narrow one, which
+    hides the colour/lighting seam that a single alpha feather leaves behind.
+    """
+    fg = foreground.astype(np.float32)
+    bg = background.astype(np.float32)
+    m = np.clip(mask, 0, 1).astype(np.float32)
+    if m.ndim == 2:
+        m = m[:, :, None]
+    h, w = m.shape[:2]
+    levels = int(max(1, min(levels, int(np.log2(max(8, min(h, w)))) - 2)))
+    gp_fg, gp_bg, gp_m = [fg], [bg], [m]
+    for _ in range(levels):
+        gp_fg.append(cv2.pyrDown(gp_fg[-1]))
+        gp_bg.append(cv2.pyrDown(gp_bg[-1]))
+        gp_m.append(cv2.pyrDown(gp_m[-1]))
+    blended = None
+    for level in range(levels, -1, -1):
+        if level == levels:
+            lap_fg, lap_bg = gp_fg[level], gp_bg[level]
+        else:
+            size = (gp_fg[level].shape[1], gp_fg[level].shape[0])
+            lap_fg = gp_fg[level] - cv2.pyrUp(gp_fg[level + 1], dstsize=size)
+            lap_bg = gp_bg[level] - cv2.pyrUp(gp_bg[level + 1], dstsize=size)
+        mk = gp_m[level]
+        if mk.ndim == 2:
+            mk = mk[:, :, None]
+        band = lap_fg * mk + lap_bg * (1 - mk)
+        if blended is None:
+            blended = band
+        else:
+            size = (band.shape[1], band.shape[0])
+            blended = cv2.pyrUp(blended, dstsize=size) + band
+    return np.clip(blended, 0, 255)
+
+
+# CelebAMask-HQ ids that make up the swappable face interior.
+REGION_FACE_IDS = (1, 2, 3, 4, 5, 10, 11, 12, 13)
+
+
+def region_blend_mask(labels_fake, labels_target=None, ids=REGION_FACE_IDS,
+                      dilate_frac=.03, feather_frac=.04):
+    """Crop-space blend mask from face-parsing labels (FaceFusion "region" mask).
+
+    Keeps only skin/brows/eyes/nose/mouth of the swapped crop (union with the
+    target's parse so a slightly different generated face shape does not leave
+    holes), removing hair, hats, glasses frames, background and the square
+    box edge from the paste. Returns float32 [0,1] at the label-map size.
+    """
+    region = np.isin(labels_fake, ids)
+    if labels_target is not None and labels_target.shape == labels_fake.shape:
+        region |= np.isin(labels_target, ids)
+    mask = region.astype(np.uint8)
+    h, w = mask.shape
+    k = max(3, int(min(h, w) * dilate_frac)) | 1
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((k, k), np.uint8))
+    # Drop stray components (eg. a second face's lips caught by the crop).
+    num, labels, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
+    if num > 2:
+        keep = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+        mask = (labels == keep).astype(np.uint8)
+    mask = cv2.dilate(mask, np.ones((k, k), np.uint8))
+    sigma = max(2.0, min(h, w) * feather_frac)
+    return soften_mask(mask.astype(np.float32), sigma)
+
+
+def crop_roi(matrix, size, shape, pad=.15):
+    """Axis-aligned frame-space bounds (x1, y1, x2, y2) covered by an aligned
+    crop of `size` px whose image->crop affine is `matrix`, padded by `pad`."""
+    inverse = cv2.invertAffineTransform(np.asarray(matrix, np.float32))
+    corners = np.array([[0, 0], [size, 0], [0, size], [size, size]], np.float32)
+    pts = np.hstack([corners, np.ones((4, 1), np.float32)]) @ inverse.T
+    x1, y1 = pts.min(axis=0)
+    x2, y2 = pts.max(axis=0)
+    px, py = (x2 - x1) * pad, (y2 - y1) * pad
+    h, w = shape[:2]
+    return (max(0, int(np.floor(x1 - px))), max(0, int(np.floor(y1 - py))),
+            min(w, int(np.ceil(x2 + px))), min(h, int(np.ceil(y2 + py))))
+
+
+def union_roi(*rois):
+    rois = [r for r in rois if r is not None]
+    if not rois:
+        return None
+    return (min(r[0] for r in rois), min(r[1] for r in rois),
+            max(r[2] for r in rois), max(r[3] for r in rois))
 
 
 def composite_region_mask(record: FaceRecord, shape, names, dilate_frac=.02,
