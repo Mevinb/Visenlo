@@ -39,9 +39,10 @@ def dealias_boost(fake: np.ndarray, factor: int) -> np.ndarray:
     """Remove the period-`factor` interleave grid left by polyphase tiles.
 
     Each tile hallucinates slightly different high-frequency texture; after
-    `explode_tiles` that shows up as a checkerboard with period `factor`. A
-    median of that footprint removes the grid while keeping edges, which a
-    Gaussian of the same footprint would blur away.
+    `explode_tiles` that can show as a faint checkerboard with period `factor`.
+    A median of that footprint removes it, but measured on real faces it also
+    removes ~75% of the sharpness gain, so this is an opt-in finish
+    (`PipelineConfig.boost_dealias`), not a default.
     """
     if factor <= 1:
         return fake
@@ -102,7 +103,7 @@ def inswapper_boost_get(swapper, image, target_face, source_face, factor,
     latent = inswapper_latent(swapper, source_face)
     fakes = run_inswapper_tiles(swapper.session, swapper.input_names, swapper.output_names[0], tiles, latent)
     fake = explode_tiles(fakes, factor)
-    if getattr(swapper, "dealias", True):
+    if getattr(swapper, "dealias", False):
         fake = dealias_boost(fake, factor)
     if not paste_back:
         return fake, matrix

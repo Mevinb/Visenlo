@@ -292,11 +292,12 @@ class PipelineConfig:
     refine_landmarks: bool = True
     # "auto" uses inswapper_128_fp16.onnx on CUDA when present; "fp32"/"fp16".
     inswapper_precision: str = "auto"
-    # Median-filter the interleaved tiles to remove the polyphase grid.
-    boost_dealias: bool = True
+    # Optional median over the tile footprint. Off by default: it removes the
+    # faint polyphase grid but also most of the sharpness pixel boost adds.
+    boost_dealias: bool = False
     # Best likeness never tries boosts that would upsample the source face
     # pixels by more than this factor (explicit @256/@512 still run as asked).
-    boost_slack: float = 1.5
+    boost_slack: float = 2.0
     similar_threshold: float = .25
     debug_masks: bool = False
     save_swaps: bool = True
@@ -708,12 +709,11 @@ class VisenloPipeline:
         return self._similarity_at(image, target_record.face.kps, identity)
 
     def _crop_sharpness(self, image, kps, size=256):
-        """Sharpness of the face as it appears in the frame. A 3px median
-        first removes pixel-level noise so tile aliasing is not rewarded."""
+        """Sharpness of the face as it appears in the frame."""
         from insightface.utils import face_align
         try:
             crop, _ = face_align.norm_crop2(image, np.asarray(kps, np.float32), size)
-            return sharpness(cv2.medianBlur(crop, 3))
+            return sharpness(crop)
         except Exception:
             return 0.0
 

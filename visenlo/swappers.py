@@ -145,7 +145,7 @@ class OnnxSwapper:
         self._source = None
         self._source_image = None
         self._source_kps = None
-        self.dealias = True
+        self.dealias = False
         if {item.name for item in self.session.get_inputs()} != {"source", "target"}:
             raise ValueError(f"Unexpected inputs in {path}")
 
@@ -189,7 +189,7 @@ class OnnxSwapper:
         crop, matrix = align(image, target_face.kps, self.spec.template, self.input_size * factor)
         outputs = [self.infer_crop(tile) for tile in implode_tiles(crop, factor)]
         fake = explode_tiles(np.stack(outputs), factor)
-        if getattr(self, "dealias", True):
+        if getattr(self, "dealias", False):
             fake = dealias_boost(fake, factor)
         return _paste_back(crop, fake, matrix, image, **paste_kwargs) if paste_back else (fake, matrix)
 
@@ -219,7 +219,7 @@ class InswapperBackend:
         self.path = Path(path)
         self.spec = MODELS.get(self.path.name, MODELS["inswapper_128.onnx"])
         self.emap = _load_emap(str(self.path))
-        self.dealias = True
+        self.dealias = False
         fp16 = self.path.with_name("inswapper_128_fp16.onnx")
         chosen = self.path
         if precision == "fp16" or (precision == "auto" and uses_cuda(providers)):

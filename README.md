@@ -23,7 +23,6 @@ colour match / occlusion / mouth / eyes → auto-save.
 |---|---|---|
 | Best likeness cost | 12 full-frame detections + 6 full-frame post-passes per image | 0 detections after the first; scoring embeds the aligned crop at the known landmarks; masks built once; post-processing runs on the face ROI only. **2.9 s → 0.8 s** per image on an RTX 4050 |
 | Best likeness choice | ties went to the *lowest* boost (blurriest) | ties go to the **sharpest** candidate; boosts that would upsample the source face are skipped |
-| Pixel-boost artifacts | visible tile-interleave grid at @256/@512 | median de-alias over the tile footprint (`boost_dealias`) |
 | Paste-back | square erode+feather box, bilinear | parsed **face-region mask** (hair/background/box edge excluded) + **Laplacian multi-band** blend, Lanczos |
 | Alignment | SCRFD's raw 5 points | eye centroids + mouth corners from the 106-point contours (`refine_landmarks`) |
 | GPU | fp32 only, 4 threads hard cap | `inswapper_128_fp16.onnx` twin on CUDA (same weights, ~2x faster tiles), `VISENLO_THREADS`, opt-in TensorRT (`VISENLO_TRT=1`) |
@@ -223,7 +222,7 @@ Flags mirror the UI: `--restorer`, `--restore-blend`, `--mask box|region`,
 |---|---|---|
 | `quality_mode` | `best_likeness` | compare x1/x2/x4 (up to the face's native resolution) vs. run the selection once |
 | `likeness_tolerance` | 0.01 | ArcFace scores closer than this are a tie → sharpest wins |
-| `boost_slack` / `boost_dealias` | 1.5 / on | max upsample allowed before extra tiles are skipped; median de-alias of tiles |
+| `boost_slack` / `boost_dealias` | 2.0 / off | max upsample allowed before extra tiles are skipped; optional median softening of the tile grid |
 | `mask_mode` / `blend_mode` | `region` / `multiband` | parsed-face blend mask; Laplacian pyramid blend |
 | `refine_landmarks` | on | 106-point eye centroids / mouth corners for alignment |
 | `restorer` / `restoration_blend` / `codeformer_weight` | `codeformer` / 0.7 / 0.9 | restorer key, mix-in amount, CodeFormer fidelity |
@@ -281,18 +280,18 @@ kernel sizes are clamped so `@2048` never crashes `cv2` on huge faces.
   The report says `requested pixel-boost 512px (x4)`.
 - **Plain `inswapper_128.onnx` + Best likeness (default):** Visenlo runs
   **native, 256px, and 512px** candidates (`candidate_boosts_for() → (1, 2, 4)`),
-  **skipping boosts that would upsample the source face more than 1.5x**
-  (`max_useful_boost()` — a 300px face gets x1/x2 only), each in **two
+  **skipping boosts that would upsample the source face more than 2x**
+  (`max_useful_boost()` — a 250px face gets x1/x2, a 400px face x1/x2/x4), each in **two
   finishes** (`default` + `identity-preserving` with color/sharpen off). It
   embeds each composited face at the target landmarks with ArcFace (no
   re-detection), treats scores within 0.01 as a tie and keeps the **sharpest**
   candidate (`select_likeness_candidate()`), reporting
   `best-likeness x2 default (compared 128/256/512)`. “Reference similarity” is
   a comparison value, not a guarantee the image looks convincing.
-- **De-aliasing.** Polyphase tiles hallucinate slightly different texture per
-  phase, which shows up as a period-`factor` grid after interleaving. A median
-  over that footprint (`boost_dealias`, on by default) removes it while
-  keeping edges.
+- **Tile grid (optional softening).** Polyphase tiles can leave a faint
+  period-`factor` grid. `boost_dealias` (off by default) applies a median over
+  that footprint — measured on real faces it also removes ~75% of the
+  sharpness pixel boost adds, so only turn it on if the grid bothers you.
 - **Plain `inswapper_128.onnx` + Manual:** runs **native x1 only**.
 - **Pixel Boost is rejected for `reswapper_256.onnx`.** The UI suffixes are only
   valid for `inswapper_128`; the pipeline raises

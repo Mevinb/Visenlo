@@ -244,7 +244,7 @@ SETTING_DEFAULTS = {
     "restoration_blend": .7, "sharpen_strength": .5, "occluder_enabled": True,
     "mouth_mode": "Swap lips, keep teeth", "eye_mode": "Swap eyes (default)",
     "mask_mode": "Parsed face region (recommended)", "blend_mode": "Multi-band (seamless)",
-    "precision": "Auto (FP16 on GPU)", "dealias": True, "debug_masks": False,
+    "precision": "Auto (FP16 on GPU)", "dealias": False, "debug_masks": False,
 }
 
 
@@ -747,7 +747,7 @@ def build_ui():
             with gr.Row():
                 precision = gr.Radio(list(PRECISION_MODES), value=list(PRECISION_MODES)[0], label="InSwapper precision",
                     info="FP16 twin of the same weights: ~2x faster pixel-boost tiles on NVIDIA GPUs.")
-                dealias = gr.Checkbox(value=True, label="De-alias pixel-boost tiles (removes the grid pattern)")
+                dealias = gr.Checkbox(value=False, label="Soften pixel-boost tile grid (median · costs sharpness)")
                 debug_masks = gr.Checkbox(value=False, label="Show masks (debug view)")
             with gr.Row():
                 preset_dd = gr.Dropdown(list_presets(), label="Presets", scale=2)

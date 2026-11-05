@@ -81,7 +81,7 @@ def test_config_defaults():
     assert cfg.quality_mode == "best_likeness"
     assert cfg.mask_mode == "region" and cfg.blend_mode == "multiband"
     assert cfg.restorer == "codeformer" and 0 < cfg.restoration_blend <= 1
-    assert cfg.boost_dealias and cfg.refine_landmarks
+    assert not cfg.boost_dealias and cfg.refine_landmarks
 
 
 def test_invalid_inputs_rejected_before_model_load(tmp_path):
