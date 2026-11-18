@@ -144,3 +144,10 @@ worth comparing visually with InSwapper, but its second-fixture output still
 shows a colored face region against the grayscale target. UniFace's first
 output shows pronounced dark facial shading. A higher identity score does not
 establish better blending, expression, teeth, or overall realism.
+
+## Performance Tuning & GPU Acceleration
+
+For NVIDIA RTX GPUs (30-series, 40-series and newer):
+- **CUDA FP16 Runtime**: Use \`inswapper_128_fp16.onnx\` as your default checkpoint for lower memory bandwidth overhead and fast execution.
+- **TensorRT Optimization**: Set \`VISENLO_TRT=1\` prior to launching to build and cache TensorRT execution engines.
+- **Thread Allocation**: Configure \`VISENLO_THREADS=4\` to balance landmark detection throughput with GPU inference.
